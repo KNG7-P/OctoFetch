@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.13.35919.96 d17.13
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OctoFetch", "OctoFetch\OctoFetch.csproj", "{EAC2488C-3591-4A0B-A758-3E4FF703884A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{EAC2488C-3591-4A0B-A758-3E4FF703884A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EAC2488C-3591-4A0B-A758-3E4FF703884A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EAC2488C-3591-4A0B-A758-3E4FF703884A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EAC2488C-3591-4A0B-A758-3E4FF703884A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {094AF7CB-6406-4EE6-BA7D-AF71328EB22C}
+	EndGlobalSection
+EndGlobal
