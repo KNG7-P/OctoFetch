@@ -1,0 +1,149 @@
+<UserControl x:Class="OctoFetch.Views.Controls.AppSidebar"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="clr-namespace:OctoFetch.ViewModels"
+             xmlns:md="http://materialdesigninxaml.net/winfx/xaml/themes"
+             mc:Ignorable="d"
+             d:DataContext="{d:DesignInstance Type=vm:MainViewModel}">
+
+    <!-- ============================ Sidebar ============================ -->
+    <Border Background="{StaticResource BgSidebar}"
+            CornerRadius="15,0,0,15" Padding="18,22">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- Logo + nav -->
+            <StackPanel Grid.Row="0">
+                <StackPanel Orientation="Horizontal" Margin="6,0,0,4">
+                    <Border Width="38" Height="38" CornerRadius="10"
+                            Background="{StaticResource AccentGradient}" Margin="0,0,12,0">
+                        <md:PackIcon Kind="CloudDownloadOutline" Width="22" Height="22"
+                                     Foreground="White"
+                                     HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="OctoFetch"
+                                   Foreground="{StaticResource TextPrimary}"
+                                   FontSize="20" FontWeight="Bold"/>
+                        <TextBlock Text="GITHUB DL/UP"
+                                   Foreground="{StaticResource TextMuted}"
+                                   FontSize="10.5" Margin="0,-2,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+                <Border Background="{StaticResource BorderBrushDefault}" Height="1" Margin="0,18,0,12"/>
+
+                <RadioButton Style="{StaticResource NavRailButton}"
+                             IsChecked="{Binding IsDashboardActive, Mode=TwoWay}"
+                             Command="{Binding NavigateDashboardCommand}">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="RocketLaunchOutline" Width="18" Height="18"
+                                     Margin="0,0,12,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="Dashboard" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+                <RadioButton Style="{StaticResource NavRailButton}"
+                             IsChecked="{Binding IsFileManagerActive, Mode=TwoWay}"
+                             Command="{Binding NavigateFileManagerCommand}">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="FolderMultipleOutline" Width="18" Height="18"
+                                     Margin="0,0,12,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="My files" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+                <RadioButton Style="{StaticResource NavRailButton}"
+                             IsChecked="{Binding IsExtractorActive, Mode=TwoWay}"
+                             Command="{Binding NavigateExtractorCommand}">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="ZipBox" Width="18" Height="18"
+                                     Margin="0,0,12,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="Extract zip" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+
+                <Border Background="{StaticResource BorderBrushDefault}" Height="1" Margin="0,16,0,12"/>
+
+                <RadioButton Style="{StaticResource NavRailButton}"
+                             IsChecked="{Binding IsStatsActive, Mode=TwoWay}"
+                             Command="{Binding NavigateStatsCommand}">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="ChartBoxOutline" Width="18" Height="18"
+                                     Margin="0,0,12,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="Usage" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+                <RadioButton Style="{StaticResource NavRailButton}"
+                             IsChecked="{Binding IsSettingsActive, Mode=TwoWay}"
+                             Command="{Binding NavigateSettingsCommand}">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="ServerNetwork" Width="18" Height="18"
+                                     Margin="0,0,12,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="Servers" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+            </StackPanel>
+
+            <!-- Bottom: status / connect / channel -->
+            <StackPanel Grid.Row="2">
+                <md:Card Background="{StaticResource BgCard}"
+                         UniformCornerRadius="11"
+                         Padding="14,12" Margin="0,0,0,10"
+                         md:ElevationAssist.Elevation="Dp1">
+                    <StackPanel>
+                        <TextBlock Text="STATUS" Style="{StaticResource SectionLabel}"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                            <Ellipse Width="9" Height="9"
+                                     Fill="{Binding SidebarStatusColor, Converter={StaticResource StringToBrush}}"
+                                     VerticalAlignment="Center" Margin="0,0,8,0">
+                                <Ellipse.Effect>
+                                    <DropShadowEffect ShadowDepth="0" BlurRadius="8"
+                                                      Color="#80FFFFFF" Opacity="0.4"/>
+                                </Ellipse.Effect>
+                            </Ellipse>
+                            <TextBlock Text="{Binding SidebarStatusText}"
+                                       Foreground="{Binding SidebarStatusColor, Converter={StaticResource StringToBrush}}"
+                                       FontSize="13" FontWeight="SemiBold"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding ActiveNodesText}"
+                                   Foreground="{StaticResource TextMuted}"
+                                   FontSize="11"/>
+                    </StackPanel>
+                </md:Card>
+
+                <!-- Connect button-->
+                <Button Style="{StaticResource MaterialDesignRaisedButton}"
+                        Background="{StaticResource AccentGradient}"
+                        BorderBrush="{StaticResource AccentGradient}"
+                        Foreground="White"
+                        Margin="0,0,0,8" Padding="0,8"
+                        md:ButtonAssist.CornerRadius="10"
+                        Command="{Binding QuickConnectCommand}">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                        <md:PackIcon Kind="LightningBolt" Width="16" Height="16"
+                                     VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBlock Text="Connect all" VerticalAlignment="Center"
+                                   FontWeight="SemiBold" FontSize="12.5"/>
+                    </StackPanel>
+                </Button>
+
+                <Button Style="{StaticResource MaterialDesignOutlinedButton}"
+                        BorderBrush="{StaticResource BorderBrushDefault}"
+                        Foreground="{StaticResource TextSecondary}"
+                        Padding="0,8"
+                        md:ButtonAssist.CornerRadius="10"
+                        Command="{Binding OpenTelegramCommand}">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                        <md:PackIcon Kind="Send" Width="14" Height="14"
+                                     VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <TextBlock Text="Join the channel" VerticalAlignment="Center" FontSize="12"/>
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Grid>
+    </Border>
+</UserControl>

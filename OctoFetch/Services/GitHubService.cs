@@ -1,488 +1,1092 @@
-﻿using System;
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Net;
-using System.Net.Http;
+using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Octokit;
+using Octokit.Internal;
+using OctoFetch.Exceptions;
+using OctoFetch.Helpers;
+using OctoFetch.Models;
 
 namespace OctoFetch.Services
 {
-    public class CurlHttpMessageHandler : HttpMessageHandler
+    public class GitHubService : IGitHubService
     {
-        private readonly string _curlPath;
-        private readonly Action<string> _logger;
+        private const string WorkflowFileName = "smart-downloader.yml";
+        private const string WorkflowPath = ".github/workflows/" + WorkflowFileName;
+        private const string YamlVersionMarker = "# OctoFetch-YAML-Version:";
+        private const int CurrentYamlVersion = 7;
 
-        public CurlHttpMessageHandler(Action<string> logger)
+        private static readonly HashSet<string> InternalFileNames =
+            new(StringComparer.OrdinalIgnoreCase) { "checksums.sha256", ".gitkeep" };
+
+        private static bool IsInternalFile(string name) =>
+            InternalFileNames.Contains(name) ||
+            name.EndsWith(".sha256", StringComparison.OrdinalIgnoreCase);
+
+        private readonly IAppLogger _logger;
+        private readonly Func<bool> _allowInsecureSslProvider;
+        private readonly Func<int> _pollIntervalSecondsProvider;
+        private readonly Func<int> _pollMaxAttemptsProvider;
+        private readonly Func<string> _chunkSizeProvider;
+
+        private readonly List<CloudNode> _activeNodes = new();
+        private readonly object _activeNodesLock = new();
+        private long _roundRobinIndex = -1;
+
+        public GitHubService(
+            IAppLogger logger,
+            Func<bool> allowInsecureSslProvider,
+            Func<int> pollIntervalSecondsProvider,
+            Func<int> pollMaxAttemptsProvider,
+            Func<string> chunkSizeProvider)
         {
             _logger = logger;
-            _curlPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "GitCore", "curl.exe");
+            _allowInsecureSslProvider = allowInsecureSslProvider;
+            _pollIntervalSecondsProvider = pollIntervalSecondsProvider;
+            _pollMaxAttemptsProvider = pollMaxAttemptsProvider;
+            _chunkSizeProvider = chunkSizeProvider;
         }
 
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        public IReadOnlyList<CloudNode> ActiveNodes
         {
-            if (!System.IO.File.Exists(_curlPath)) throw new FileNotFoundException("curl.exe not found.");
-
-            string tempDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "OctoFetch");
-            if (!System.IO.Directory.Exists(tempDir)) System.IO.Directory.CreateDirectory(tempDir);
-
-            string tempBodyFile = null;
-            string tempHeaderFile = System.IO.Path.Combine(tempDir, Guid.NewGuid().ToString() + ".tmp");
-            string tempOutFile = System.IO.Path.Combine(tempDir, Guid.NewGuid().ToString() + ".tmp");
-
-            try
-            {
-                var args = new StringBuilder();
-                args.Append("--retry 3 --retry-delay 2 --connect-timeout 20 -s -k ");
-                args.Append($"-D \"{tempHeaderFile}\" ");
-                args.Append($"-o \"{tempOutFile}\" ");
-                args.Append($"-X {request.Method.Method} ");
-
-                foreach (var header in request.Headers)
-                    args.Append($"-H \"{header.Key}: {string.Join(", ", header.Value)}\" ");
-
-                if (request.Content != null)
-                {
-                    foreach (var header in request.Content.Headers)
-                        args.Append($"-H \"{header.Key}: {string.Join(", ", header.Value)}\" ");
-
-                    byte[] bodyBytes = await request.Content.ReadAsByteArrayAsync();
-                    if (bodyBytes.Length > 0)
-                    {
-                        tempBodyFile = System.IO.Path.Combine(tempDir, Guid.NewGuid().ToString() + ".tmp");
-                        System.IO.File.WriteAllBytes(tempBodyFile, bodyBytes);
-                        args.Append($"-d @\"{tempBodyFile}\" ");
-                    }
-                }
-
-                args.Append($"\"{request.RequestUri.ToString()}\"");
-
-                var psi = new ProcessStartInfo
-                {
-                    FileName = _curlPath,
-                    WorkingDirectory = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "GitCore"),
-                    Arguments = args.ToString(),
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-
-                using (var process = Process.Start(psi))
-                {
-                    if (process != null)
-                    {
-                        try { await process.WaitForExitAsync(cancellationToken); }
-                        catch (OperationCanceledException) { if (!process.HasExited) process.Kill(); throw; }
-                    }
-                }
-
-                var response = new HttpResponseMessage(HttpStatusCode.InternalServerError);
-                if (System.IO.File.Exists(tempOutFile) && new System.IO.FileInfo(tempOutFile).Length > 0)
-                    response.Content = new ByteArrayContent(System.IO.File.ReadAllBytes(tempOutFile));
-                else
-                    response.Content = new StringContent("{}", Encoding.UTF8, "application/json");
-
-                if (System.IO.File.Exists(tempHeaderFile))
-                {
-                    var headerLines = System.IO.File.ReadAllLines(tempHeaderFile);
-                    if (headerLines.Length > 0)
-                    {
-                        var statusLine = headerLines[0].Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                        if (statusLine.Length >= 2 && int.TryParse(statusLine[1], out int code))
-                            response.StatusCode = (HttpStatusCode)code;
-
-                        for (int i = 1; i < headerLines.Length; i++)
-                        {
-                            var line = headerLines[i];
-                            if (string.IsNullOrWhiteSpace(line)) continue;
-                            var sep = line.IndexOf(':');
-                            if (sep > 0)
-                            {
-                                string key = line.Substring(0, sep).Trim();
-                                string val = line.Substring(sep + 1).Trim();
-                                if (key.StartsWith("Content-", StringComparison.OrdinalIgnoreCase)) response.Content.Headers.TryAddWithoutValidation(key, val);
-                                else response.Headers.TryAddWithoutValidation(key, val);
-                            }
-                        }
-                    }
-                }
-
-                if (!response.Content.Headers.Contains("Content-Type")) response.Content.Headers.TryAddWithoutValidation("Content-Type", "application/json; charset=utf-8");
-                response.RequestMessage = request;
-                return response;
-            }
-            finally
-            {
-                try { if (tempBodyFile != null && System.IO.File.Exists(tempBodyFile)) System.IO.File.Delete(tempBodyFile); } catch { }
-                try { if (System.IO.File.Exists(tempHeaderFile)) System.IO.File.Delete(tempHeaderFile); } catch { }
-                try { if (System.IO.File.Exists(tempOutFile)) System.IO.File.Delete(tempOutFile); } catch { }
-            }
-        }
-    }
-
-    public class CloudNode
-    {
-        public string Token { get; set; }
-        public string RepoName { get; set; }
-
-        [Newtonsoft.Json.JsonIgnore] public string Username { get; set; }
-        [Newtonsoft.Json.JsonIgnore] public bool IsConnected { get; set; }
-        [Newtonsoft.Json.JsonIgnore] public GitHubClient Client { get; set; }
-        [Newtonsoft.Json.JsonIgnore] public string BadgeColor { get; set; } = "#E53935";
-        [Newtonsoft.Json.JsonIgnore] public string VisibilityText { get; set; } = "Unknown";
-        [Newtonsoft.Json.JsonIgnore] public bool IsPrivate { get; set; }
-
-        public string DisplayTitle => $"{RepoName} ({Token.Substring(0, Math.Min(5, Token.Length))}...)";
-    }
-
-    public class RemoteFile
-    {
-        public string Name { get; set; }
-        public string Path { get; set; }
-        public string Sha { get; set; }
-        public string RawUrl { get; set; }
-        public CloudNode OwnerNode { get; set; }
-    }
-
-    public class GitHubService
-    {
-        private readonly Action<string> _logger;
-        public List<CloudNode> ActiveNodes { get; private set; } = new List<CloudNode>();
-        public bool IsConnected => ActiveNodes.Any(n => n.IsConnected);
-
-        private int _roundRobinIndex = 0;
-
-        public GitHubService(Action<string> logger) { _logger = logger; }
-
-        private CloudNode GetNextAvailableNode()
-        {
-            var connected = ActiveNodes.Where(n => n.IsConnected).ToList();
-            if (connected.Count == 0) throw new Exception("No active GitHub accounts connected.");
-            var node = connected[_roundRobinIndex % connected.Count];
-            _roundRobinIndex++;
-            return node;
+            get { lock (_activeNodesLock) return _activeNodes.ToArray(); }
         }
 
-        public async Task<bool> InitializeNodeAsync(CloudNode node, Action<string> onSettingsLog = null)
+        public bool IsConnected
         {
-            node.BadgeColor = "#FFCA28";
-            onSettingsLog?.Invoke($"⏳ Testing: [{node.RepoName}]...");
+            get { lock (_activeNodesLock) return _activeNodes.Any(n => n.IsConnected); }
+        }
 
-            int retries = 3;
-            while (retries > 0)
+        public void RemoveNode(CloudNode node)
+        {
+            lock (_activeNodesLock) _activeNodes.Remove(node);
+        }
+
+        // -------- Node initialization ----------------------------------------
+
+        public async Task<bool> InitializeNodeAsync(CloudNode node, CancellationToken cancellationToken = default)
+        {
+            node.BadgeColor = "#F59E0B";
+            _logger.Log(LogChannel.Settings, $"⏳ Testing: [{node.RepoName}]...");
+
+            const int maxRetries = 3;
+            for (var attempt = 1; attempt <= maxRetries; attempt++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 try
                 {
-                    var connection = new Connection(new ProductHeaderValue("OctoFetch-Pro"), new Octokit.Internal.HttpClientAdapter(() => new CurlHttpMessageHandler(_logger)));
-                    node.Client = new GitHubClient(connection) { Credentials = new Credentials(node.Token) };
+                    var connection = new Connection(
+                        new Octokit.ProductHeaderValue("OctoFetch"),
+                        new HttpClientAdapter(() => new CurlHttpMessageHandler(_logger, _allowInsecureSslProvider())));
 
-                    var user = await node.Client.User.Current();
+                    node.Client = new GitHubClient(connection)
+                    {
+                        Credentials = new Credentials(node.Token),
+                    };
+
+                    var user = await node.Client.User.Current().ConfigureAwait(false);
                     node.Username = user.Login;
 
                     Repository repo;
                     try
                     {
-                        repo = await node.Client.Repository.Get(node.Username, node.RepoName);
+                        repo = await node.Client.Repository.Get(node.Username, node.RepoName).ConfigureAwait(false);
                     }
                     catch (NotFoundException)
                     {
-                        onSettingsLog?.Invoke($"⚙️ Creating repo '{node.RepoName}'...");
-                        repo = await node.Client.Repository.Create(new NewRepository(node.RepoName) { Private = false, AutoInit = true });
+                        _logger.Log(LogChannel.Settings, $"⚙️ Creating repo '{node.RepoName}' (public)...");
+                        repo = await node.Client.Repository.Create(new NewRepository(node.RepoName)
+                        {
+                            Private = false,
+                            AutoInit = true,
+                        }).ConfigureAwait(false);
                     }
 
                     node.IsPrivate = repo.Private;
                     node.VisibilityText = repo.Private ? "🔒 Private" : "🌐 Public";
+                    node.DefaultBranch = string.IsNullOrEmpty(repo.DefaultBranch) ? "main" : repo.DefaultBranch;
 
-                    await InjectWorkflowAsync(node);
+                    await EnsureWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
 
                     node.IsConnected = true;
-                    node.BadgeColor = "#00E676";
-                    if (!ActiveNodes.Contains(node)) ActiveNodes.Add(node);
+                    node.BadgeColor = "#10B981";
 
-                    onSettingsLog?.Invoke($"✅ Connected: [{node.RepoName}] as {node.Username}");
+                    lock (_activeNodesLock)
+                    {
+                        if (!_activeNodes.Contains(node)) _activeNodes.Add(node);
+                    }
+
+                    _logger.Log(LogChannel.Settings, $"✅ Connected: [{node.RepoName}] as {node.Username} (branch: {node.DefaultBranch})");
                     return true;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
-                    retries--;
-                    if (retries == 0)
+                    if (attempt == maxRetries)
                     {
                         node.IsConnected = false;
-                        node.BadgeColor = "#E53935";
+                        node.BadgeColor = "#EF4444";
                         node.VisibilityText = "Offline";
-                        onSettingsLog?.Invoke($"❌ Failed [{node.RepoName}]: {ex.Message}");
+                        _logger.LogException(LogChannel.Settings, $"Failed [{node.RepoName}] after {maxRetries} attempts", ex);
                         return false;
                     }
-                    onSettingsLog?.Invoke($"⚠️ Network glitch on '{node.RepoName}'. Retrying...");
-                    await Task.Delay(2000);
+
+                    _logger.Log(LogChannel.Settings,
+                        $"⚠️ Attempt {attempt}/{maxRetries} on '{node.RepoName}' failed: {ex.GetType().Name}: {ex.Message}");
+                    await Task.Delay(2000, cancellationToken).ConfigureAwait(false);
                 }
             }
+
             return false;
         }
 
-        public async Task ToggleNodeVisibilityAsync(CloudNode node)
+        public async Task ToggleNodeVisibilityAsync(CloudNode node, CancellationToken cancellationToken = default)
         {
-            if (!node.IsConnected) throw new Exception("Node is not connected.");
+            if (!node.IsConnected)
+                throw new NodeConnectionException(node.RepoName, "Node is not connected.");
+            if (node.Client == null || node.Username == null)
+                throw new NodeConnectionException(node.RepoName, "Client not initialized.");
+
+            cancellationToken.ThrowIfCancellationRequested();
+
             var update = new RepositoryUpdate { Name = node.RepoName, Private = !node.IsPrivate };
-            var repo = await node.Client.Repository.Edit(node.Username, node.RepoName, update);
+            var repo = await node.Client.Repository.Edit(node.Username, node.RepoName, update).ConfigureAwait(false);
             node.IsPrivate = repo.Private;
             node.VisibilityText = repo.Private ? "🔒 Private" : "🌐 Public";
         }
 
-        public async Task TriggerLeechAsync(string targetUrl, bool isSafe, bool isEncrypted, Action<string, string> onLinkFetched)
+        // -------- Workflow injection / update --------------------------------
+        private static string LoadEmbeddedWorkflowYaml()
         {
-            var node = GetNextAvailableNode();
-            string rawName = Uri.UnescapeDataString(targetUrl.Split('?')[0].Split('/').Last());
-            string nameNoExt = System.IO.Path.GetFileNameWithoutExtension(rawName);
+            var asm = Assembly.GetExecutingAssembly();
+            var name = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith("smart-downloader.yml", StringComparison.OrdinalIgnoreCase))
+                ?? throw new OctoFetchException("Embedded workflow YAML not found.");
 
-            string folderName;
-            if (isEncrypted)
-            {
-                using (var md5 = System.Security.Cryptography.MD5.Create())
-                {
-                    byte[] hash = md5.ComputeHash(Encoding.UTF8.GetBytes(nameNoExt + DateTime.Now.Ticks));
-                    folderName = "ENC_" + BitConverter.ToString(hash).Replace("-", "").ToLower().Substring(0, 16);
-                }
-            }
-            else folderName = isSafe ? Regex.Replace(nameNoExt, "[^a-zA-Z0-9]", "_") : nameNoExt;
+            using var stream = asm.GetManifestResourceStream(name)
+                ?? throw new OctoFetchException("Could not open embedded workflow YAML stream.");
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            return reader.ReadToEnd();
+        }
 
-            if (string.IsNullOrWhiteSpace(folderName)) folderName = "DL_" + DateTime.Now.Ticks;
+        private static int? ExtractYamlVersion(string content)
+        {
+            if (string.IsNullOrEmpty(content)) return null;
+            var match = Regex.Match(content, $@"{Regex.Escape(YamlVersionMarker)}\s*(\d+)");
+            return match.Success && int.TryParse(match.Groups[1].Value, out var v) ? v : null;
+        }
 
-            _logger($"🚀 [{node.RepoName}] Task started. Folder: {folderName}");
+        private async Task EnsureWorkflowAsync(CloudNode node, CancellationToken cancellationToken)
+        {
+            if (node.Client == null || node.Username == null) return;
+            cancellationToken.ThrowIfCancellationRequested();
 
-            var inputs = new Dictionary<string, object> { { "file_url", targetUrl }, { "folder_name", folderName }, { "safe_mode", isSafe.ToString().ToLower() } };
+            var yaml = LoadEmbeddedWorkflowYaml();
 
             try
             {
-                await node.Client.Actions.Workflows.CreateDispatch(node.Username, node.RepoName, "smart-downloader.yml", new CreateWorkflowDispatch("main") { Inputs = inputs });
-                _logger("⏳ Trigger sent. Waiting for Action to complete...");
-                await MonitorAndFetchAsync(node, folderName, "smart-downloader.yml", onLinkFetched);
+                var existing = await node.Client.Repository.Content
+                    .GetAllContents(node.Username, node.RepoName, WorkflowPath)
+                    .ConfigureAwait(false);
+
+                var current = existing?.FirstOrDefault();
+                if (current == null)
+                {
+                    await CreateWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+
+                var existingYaml = current.Content ?? string.Empty;
+
+                var existingVersion = ExtractYamlVersion(existingYaml);
+                if (existingVersion is null || existingVersion < CurrentYamlVersion)
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"🔁 Updating workflow on [{node.RepoName}] (v{existingVersion?.ToString() ?? "?"} → v{CurrentYamlVersion})...");
+                    await node.Client.Repository.Content.UpdateFile(
+                        node.Username,
+                        node.RepoName,
+                        WorkflowPath,
+                        new UpdateFileRequest($"chore: upgrade workflow to v{CurrentYamlVersion}", yaml, current.Sha, node.DefaultBranch)
+                    ).ConfigureAwait(false);
+                }
+            }
+            catch (NotFoundException)
+            {
+                await CreateWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private async Task CreateWorkflowAsync(CloudNode node, string yaml, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                _logger.Log(LogChannel.Settings, $"🛠️ Injecting workflow into [{node.RepoName}]...");
+                await node.Client!.Repository.Content.CreateFile(
+                    node.Username!,
+                    node.RepoName,
+                    WorkflowPath,
+                    new CreateFileRequest("chore: init OctoFetch workflow", yaml, node.DefaultBranch)
+                ).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                _logger($"❌ Action Trigger Error: {ex.Message}");
+                _logger.LogException(LogChannel.Settings, $"Failed to inject workflow on [{node.RepoName}]", ex);
             }
         }
 
-        private async Task MonitorAndFetchAsync(CloudNode node, string targetFolder, string workflowName, Action<string, string> onLinkFetched)
+        // -------- Round-robin -----------------------------------------------
+        private CloudNode GetNextAvailableNode()
         {
-            bool isFinished = false;
-            int retryCount = 0;
-            await Task.Delay(15000);
+            CloudNode[] connected;
+            lock (_activeNodesLock)
+                connected = _activeNodes.Where(n => n.IsConnected).ToArray();
 
-            while (!isFinished && retryCount < 90)
+            if (connected.Length == 0) throw new NoNodesAvailableException();
+
+            var idx = (int)(Interlocked.Increment(ref _roundRobinIndex) % connected.Length);
+            if (idx < 0) idx += connected.Length;
+            return connected[idx];
+        }
+
+        // -------- Folder name generation ------------------------------------
+        private static string ComputeSha256Hex(string input)
+        {
+            using var sha = SHA256.Create();
+            var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(input));
+            return Convert.ToHexString(hash).ToLowerInvariant();
+        }
+
+        public const string FolderTagSeparator = "__";
+
+        private static readonly HashSet<string> KnownTags =
+            new(StringComparer.OrdinalIgnoreCase)
+            { "Movies", "Software", "Games", "Music", "Books", "Documents", "Other" };
+
+        public static (string Tag, string DisplayName) ParseFolderTag(string folderName)
+        {
+            var idx = folderName.IndexOf(FolderTagSeparator, StringComparison.Ordinal);
+            if (idx <= 0) return ("Other", folderName);
+
+            var prefix = folderName.Substring(0, idx);
+            if (!KnownTags.Contains(prefix)) return ("Other", folderName);
+
+            var rest = folderName.Substring(idx + FolderTagSeparator.Length);
+            return (prefix, rest);
+        }
+
+        private static string BuildFolderName(string targetUrl, bool isSafe, bool isObfuscated, string? tag)
+        {
+            var rawName = Uri.UnescapeDataString(targetUrl.Split('?')[0].Split('/').Last());
+            var nameNoExt = Path.GetFileNameWithoutExtension(rawName);
+            if (string.IsNullOrWhiteSpace(nameNoExt)) nameNoExt = "DL";
+
+            string baseFolder;
+            if (isObfuscated)
             {
+                var hash = ComputeSha256Hex($"{nameNoExt}|{DateTime.UtcNow.Ticks}|{Guid.NewGuid()}");
+                baseFolder = "OBF_" + hash[..16];
+            }
+            else
+            {
+                var sanitized = Regex.Replace(nameNoExt, "[^a-zA-Z0-9._-]", "_");
+
+                if (sanitized.Length > 64)
+                    sanitized = sanitized.Substring(0, 64);
+
+                if (string.IsNullOrWhiteSpace(sanitized) || sanitized.All(c => c == '_'))
+                {
+                    var hash = ComputeSha256Hex($"{nameNoExt}|{DateTime.UtcNow.Ticks}");
+                    sanitized = "DL_" + hash[..12];
+                }
+
+                baseFolder = sanitized;
+            }
+
+            var unique = $"{DateTime.UtcNow:yyyyMMddHHmmss}_{Guid.NewGuid():N}".Substring(0, 21);
+
+            var resolvedTag = TagInferrer.Resolve(tag, targetUrl);
+            if (!KnownTags.Contains(resolvedTag)) resolvedTag = "Other";
+
+            return $"{resolvedTag}{FolderTagSeparator}{baseFolder}_{unique}";
+        }
+
+        // -------- Trigger + monitor -----------------------------------------
+
+        public async Task TriggerLeechAsync(
+            string targetUrl,
+            bool isSafe,
+            bool isObfuscated,
+            string? tag,
+            Action<string, string> onLinkFetched,
+            Action<CloudNode, long>? onRunResolved = null,
+            Action<int, string>? onProgress = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(targetUrl))
+                throw new ArgumentException("Target URL must not be empty.", nameof(targetUrl));
+
+            var node = GetNextAvailableNode();
+            if (node.Client == null || node.Username == null)
+                throw new NodeConnectionException(node.RepoName, "Client not initialized.");
+
+            var folderName = BuildFolderName(targetUrl, isSafe, isObfuscated, tag);
+            _logger.Log(LogChannel.Downloader, $"🚀 [{node.RepoName}] Task started. Folder: {folderName}");
+
+            var inputs = new Dictionary<string, object>
+            {
+                ["file_url"] = targetUrl,
+                ["folder_name"] = folderName,
+                ["safe_mode"] = isSafe ? "true" : "false",
+                ["chunk_size"] = _chunkSizeProvider(),
+            };
+
+            var dispatchTime = DateTimeOffset.UtcNow.AddSeconds(-2);
+
+            try
+            {
+                await node.Client.Actions.Workflows.CreateDispatch(
+                    node.Username, node.RepoName, WorkflowFileName,
+                    new CreateWorkflowDispatch(node.DefaultBranch) { Inputs = inputs }
+                ).ConfigureAwait(false);
+
+                _logger.Log(LogChannel.Downloader, "⏳ Trigger sent. Locating workflow run...");
+                await MonitorAndFetchAsync(node, folderName, dispatchTime, onLinkFetched, onRunResolved, onProgress, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.Log(LogChannel.Downloader, "🛑 Operation cancelled by user.");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new WorkflowDispatchException($"Action trigger failed on [{node.RepoName}]: {ex.Message}", ex);
+            }
+        }
+
+        private async Task<WorkflowRun?> ResolveDispatchedRunAsync(
+            CloudNode node,
+            string folderName,
+            DateTimeOffset dispatchTime,
+            Action<int, string>? onProgress,
+            CancellationToken cancellationToken)
+        {
+            const int maxAttempts = 12;
+            for (var i = 0; i < maxAttempts; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try { onProgress?.Invoke(0, $"Locating workflow run… ({i + 1}/{maxAttempts})"); }
+                catch { }
+
+                await Task.Delay(2500, cancellationToken).ConfigureAwait(false);
+
+                var runs = await node.Client!.Actions.Workflows.Runs
+                    .ListByWorkflow(node.Username!, node.RepoName, WorkflowFileName,
+                        new WorkflowRunsRequest { Event = "workflow_dispatch", Branch = node.DefaultBranch })
+                    .ConfigureAwait(false);
+
+                var candidate = runs.WorkflowRuns
+                    .Where(r => r.CreatedAt >= dispatchTime)
+                    .OrderByDescending(r => r.CreatedAt)
+                    .FirstOrDefault();
+
+                if (candidate != null)
+                {
+                    _logger.Log(LogChannel.Downloader,
+                        $"📌 Tracking workflow run #{candidate.Id} for folder '{folderName}'.");
+                    return candidate;
+                }
+            }
+
+            return null;
+        }
+
+        private async Task MonitorAndFetchAsync(
+            CloudNode node,
+            string targetFolder,
+            DateTimeOffset dispatchTime,
+            Action<string, string> onLinkFetched,
+            Action<CloudNode, long>? onRunResolved,
+            Action<int, string>? onProgress,
+            CancellationToken cancellationToken)
+        {
+            try { onProgress?.Invoke(0, "Initializing…"); }
+            catch { }
+
+            var run = await ResolveDispatchedRunAsync(node, targetFolder, dispatchTime, onProgress, cancellationToken).ConfigureAwait(false);
+            if (run == null)
+            {
+                _logger.Log(LogChannel.Downloader, "❌ Could not locate the dispatched workflow run. Check GitHub UI.");
+                onProgress?.Invoke(0, "Run not found");
+                return;
+            }
+
+            try { onRunResolved?.Invoke(node, run.Id); }
+            catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "onRunResolved callback failed", ex); }
+
+            var pollInterval = Math.Max(2, _pollIntervalSecondsProvider());
+            var maxAttempts = Math.Max(1, _pollMaxAttemptsProvider());
+
+            int lastKnownPercent = 0;
+            string lastKnownLabel = "Queued";
+            int consecutiveErrors = 0;
+            const int errorLogThreshold = 3;
+
+            for (var attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 try
                 {
-                    var runs = await node.Client.Actions.Workflows.Runs.ListByWorkflow(node.Username, node.RepoName, workflowName, new WorkflowRunsRequest());
-                    var latestRun = runs.WorkflowRuns.OrderByDescending(r => r.CreatedAt).FirstOrDefault();
+                    var current = await node.Client!.Actions.Workflows.Runs
+                        .Get(node.Username!, node.RepoName, run.Id)
+                        .ConfigureAwait(false);
 
-                    if (latestRun != null)
+                    var (percent, label) = await ComputeRealProgressAsync(node, run.Id, current, cancellationToken).ConfigureAwait(false);
+                    if (percent.HasValue)
                     {
-                        if (latestRun.Status == WorkflowRunStatus.Completed)
+                        lastKnownPercent = percent.Value;
+                        lastKnownLabel = label;
+                    }
+
+                    try { onProgress?.Invoke(lastKnownPercent, lastKnownLabel); }
+                    catch (Exception cb) { _logger.LogException(LogChannel.Downloader, "onProgress callback failed", cb); }
+
+                    consecutiveErrors = 0;
+
+                    if (current.Status == WorkflowRunStatus.Completed)
+                    {
+                        if (current.Conclusion == WorkflowRunConclusion.Success)
                         {
-                            if (latestRun.Conclusion == WorkflowRunConclusion.Success)
-                            {
-                                _logger("✅ Action completed successfully. Fetching links...");
-                                await FetchLinksFromFolderAsync(node, targetFolder, onLinkFetched);
-                            }
-                            else
-                            {
-                                _logger("❌ GitHub Action failed (Timeout, Storage Limit, or Error).");
-                            }
-                            isFinished = true;
-                        }
-                        else if (latestRun.Status == WorkflowRunStatus.Queued)
-                        {
-                            _logger($"⏳ [{node.RepoName}] Queued: Waiting for GitHub to allocate a free server...");
-                        }
-                        else if (latestRun.Status == WorkflowRunStatus.InProgress)
-                        {
-                            _logger($"⚙️ [{node.RepoName}] In Progress: Server allocated, processing file...");
+                            _logger.Log(LogChannel.Downloader, "✅ Action completed successfully. Fetching links...");
+                            try { onProgress?.Invoke(100, "Completed"); } catch { /* swallow */ }
+                            await FetchLinksFromFolderAsync(node, targetFolder, onLinkFetched, cancellationToken)
+                                .ConfigureAwait(false);
                         }
                         else
                         {
-                            _logger($"🔄 [{node.RepoName}] Status: {latestRun.Status}...");
+                            _logger.Log(LogChannel.Downloader,
+                                $"❌ Workflow run finished with conclusion: {current.Conclusion}.");
+                            try { onProgress?.Invoke(lastKnownPercent, $"Failed: {current.Conclusion}"); } catch { /* swallow */ }
                         }
+                        return;
                     }
+
+                    _logger.Log(LogChannel.Downloader,
+                        current.Status == WorkflowRunStatus.Queued
+                            ? $"⏳ [{node.RepoName}] Queued: waiting for a runner..."
+                            : current.Status == WorkflowRunStatus.InProgress
+                                ? $"⚙️ [{node.RepoName}] In Progress ({lastKnownPercent}%): {lastKnownLabel}"
+                                : $"🔄 [{node.RepoName}] Status: {current.Status}");
                 }
+                catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
                 {
-                    _logger($"⚠️ Network Error: {ex.Message}. Retrying monitor...");
+                    consecutiveErrors++;
+                    try { onProgress?.Invoke(lastKnownPercent, lastKnownLabel); }
+                    catch { }
+
+                    if (consecutiveErrors >= errorLogThreshold)
+                    {
+                        _logger.LogException(LogChannel.Downloader,
+                            $"Network error while polling ({consecutiveErrors} consecutive)", ex);
+                        if (consecutiveErrors % 5 == 0) consecutiveErrors = errorLogThreshold;
+                    }
                 }
 
-                if (!isFinished)
-                {
-                    await Task.Delay(10000);
-                    retryCount++;
-                }
+                await Task.Delay(TimeSpan.FromSeconds(pollInterval), cancellationToken).ConfigureAwait(false);
             }
 
-            if (!isFinished) _logger("❌ Monitor Timeout. The GitHub queue is too long. Check GitHub website directly.");
+            _logger.Log(LogChannel.Downloader,
+                "❌ Monitor timeout. The GitHub queue is taking too long; check GitHub directly.");
         }
 
-        private async Task FetchLinksFromFolderAsync(CloudNode node, string folder, Action<string, string> onLinkFetched)
+        private async Task<(int? percent, string label)> ComputeRealProgressAsync(
+            CloudNode node, long runId, WorkflowRun current, CancellationToken cancellationToken)
         {
             try
             {
-                var contents = await node.Client.Repository.Content.GetAllContents(node.Username, node.RepoName, $"downloads/{folder}");
-                if (contents == null) return;
+                if (current.Status == WorkflowRunStatus.Queued) return (0, "Queued");
 
-                foreach (var item in contents.Where(c => c.Type == ContentType.File))
+                var jobs = await node.Client!.Actions.Workflows.Jobs
+                    .List(node.Username!, node.RepoName, runId).ConfigureAwait(false);
+
+                if (jobs?.Jobs == null || jobs.Jobs.Count == 0) return (0, "Starting");
+
+                int totalSteps = 0, completedSteps = 0;
+                string currentLabel = "Working...";
+
+                foreach (var job in jobs.Jobs)
                 {
-                    string rawUrl = node.IsPrivate
-                        ? $"https://github.com/{node.Username}/{node.RepoName}/raw/refs/heads/main/{item.Path}"
-                        : $"https://raw.githubusercontent.com/{node.Username}/{node.RepoName}/main/{item.Path}";
-
-                    onLinkFetched?.Invoke(item.Name, rawUrl);
-                    _logger($"🔗 Fetched: {item.Name}");
+                    if (job.Steps == null) continue;
+                    foreach (var step in job.Steps)
+                    {
+                        totalSteps++;
+                        if (string.Equals(step.Status.ToString(), "Completed", StringComparison.OrdinalIgnoreCase))
+                            completedSteps++;
+                        else if (string.Equals(step.Status.ToString(), "InProgress", StringComparison.OrdinalIgnoreCase))
+                            currentLabel = step.Name ?? currentLabel;
+                    }
                 }
+
+                if (totalSteps == 0) return (0, "Starting");
+                var pct = (int)Math.Floor((double)completedSteps / totalSteps * 100.0);
+                if (pct < 0) pct = 0;
+                if (pct > 99) pct = 99;
+                return (pct, currentLabel);
             }
-            catch (Exception ex) { _logger($"❌ Fetch Error: {ex.Message}"); }
+            catch (OperationCanceledException) { throw; }
+            catch
+            {
+                return (null, string.Empty);
+            }
         }
 
-        public async Task<List<RemoteFile>> GetAllCloudFilesAggregatedAsync()
+        public async Task CancelDispatchedRunAsync(CloudNode node, long runId, CancellationToken cancellationToken = default)
         {
-            var allFiles = new List<RemoteFile>();
+            if (node.Client == null || node.Username == null) return;
+            try
+            {
+                await node.Client.Actions.Workflows.Runs
+                    .Cancel(node.Username, node.RepoName, runId)
+                    .ConfigureAwait(false);
+                _logger.Log(LogChannel.Downloader, $"🛑 Sent cancel request for run #{runId} on [{node.RepoName}].");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogException(LogChannel.Downloader, $"Failed to cancel run #{runId} on [{node.RepoName}]", ex);
+            }
+        }
+
+        // -------- Link fetch + delete ---------------------------------------
+        private static string BuildRawUrl(CloudNode node, string path)
+        {
+            return node.IsPrivate
+                ? $"https://github.com/{node.Username}/{node.RepoName}/raw/refs/heads/{node.DefaultBranch}/{path}"
+                : $"https://raw.githubusercontent.com/{node.Username}/{node.RepoName}/{node.DefaultBranch}/{path}";
+        }
+
+        private async Task FetchLinksFromFolderAsync(
+            CloudNode node, string folder,
+            Action<string, string> onLinkFetched,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                var contents = await node.Client!.Repository.Content
+                    .GetAllContents(node.Username!, node.RepoName, $"downloads/{folder}")
+                    .ConfigureAwait(false);
+                if (contents == null) return;
+
+                foreach (var item in contents.Where(c => c.Type == Octokit.ContentType.File))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (IsInternalFile(item.Name)) continue;
+                    var url = BuildRawUrl(node, item.Path);
+                    onLinkFetched.Invoke(item.Name, url);
+                    _logger.Log(LogChannel.Downloader, $"🔗 Fetched: {item.Name}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogException(LogChannel.Downloader, "Fetch error", ex);
+            }
+        }
+
+        public async Task<IReadOnlyList<NodeUsageStat>> GetClusterStatsAsync(CancellationToken cancellationToken = default)
+        {
+            CloudNode[] nodes;
+            lock (_activeNodesLock) nodes = _activeNodes.ToArray();
+
+            var results = new ConcurrentBag<NodeUsageStat>();
             var tasks = new List<Task>();
 
-            foreach (var node in ActiveNodes.Where(n => n.IsConnected))
+            foreach (var node in nodes)
+            {
+                tasks.Add(Task.Run(async () =>
+                {
+                    var stat = new NodeUsageStat
+                    {
+                        RepoName = node.RepoName,
+                        IsConnected = node.IsConnected,
+                    };
+
+                    if (!node.IsConnected || node.Client == null || node.Username == null)
+                    {
+                        results.Add(stat);
+                        return;
+                    }
+
+                    try
+                    {
+                        var dirs = await node.Client.Repository.Content
+                            .GetAllContents(node.Username, node.RepoName, "downloads")
+                            .ConfigureAwait(false);
+
+                        if (dirs == null) { results.Add(stat); return; }
+
+                        foreach (var d in dirs.Where(c => c.Type == Octokit.ContentType.Dir))
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            stat.FolderCount++;
+                            try
+                            {
+                                var sub = await node.Client.Repository.Content
+                                    .GetAllContents(node.Username, node.RepoName, d.Path)
+                                    .ConfigureAwait(false);
+                                if (sub == null) continue;
+                                foreach (var f in sub.Where(c => c.Type == Octokit.ContentType.File))
+                                {
+                                    if (IsInternalFile(f.Name)) continue;
+                                    stat.FileCount++;
+                                    stat.TotalBytes += f.Size;
+                                }
+                            }
+                            catch (NotFoundException) { }
+                        }
+                    }
+                    catch (NotFoundException) { }
+                    catch (Exception ex)
+                    {
+                        _logger.LogException(LogChannel.Settings, $"Stats failed on [{node.RepoName}]", ex);
+                    }
+                    finally
+                    {
+                        results.Add(stat);
+                    }
+                }, cancellationToken));
+            }
+
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+            return results.OrderBy(s => s.RepoName).ToArray();
+        }
+
+        public async Task<IReadOnlyList<RemoteFile>> GetAllCloudFilesAggregatedAsync(
+            CancellationToken cancellationToken = default)
+        {
+
+            var bag = new ConcurrentBag<RemoteFile>();
+            var tasks = new List<Task>();
+
+            CloudNode[] nodes;
+            lock (_activeNodesLock) nodes = _activeNodes.Where(n => n.IsConnected).ToArray();
+
+            foreach (var node in nodes)
             {
                 tasks.Add(Task.Run(async () =>
                 {
                     try
                     {
-                        var contents = await node.Client.Repository.Content.GetAllContents(node.Username, node.RepoName, "downloads");
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var contents = await node.Client!.Repository.Content
+                            .GetAllContents(node.Username!, node.RepoName, "downloads")
+                            .ConfigureAwait(false);
                         if (contents == null) return;
 
-                        foreach (var item in contents.Where(c => c.Type == ContentType.Dir))
+                        foreach (var dir in contents.Where(c => c.Type == Octokit.ContentType.Dir))
                         {
-                            var subContents = await node.Client.Repository.Content.GetAllContents(node.Username, node.RepoName, item.Path);
-                            if (subContents == null) continue;
+                            cancellationToken.ThrowIfCancellationRequested();
 
-                            foreach (var subItem in subContents)
+                            IReadOnlyList<RepositoryContent> sub;
+                            try
                             {
-                                lock (allFiles)
-                                {
-                                    string rawUrl = node.IsPrivate
-                                        ? $"https://github.com/{node.Username}/{node.RepoName}/raw/refs/heads/main/{subItem.Path}"
-                                        : $"https://raw.githubusercontent.com/{node.Username}/{node.RepoName}/main/{subItem.Path}";
+                                sub = await node.Client.Repository.Content
+                                    .GetAllContents(node.Username!, node.RepoName, dir.Path)
+                                    .ConfigureAwait(false);
+                            }
+                            catch (NotFoundException) { continue; }
+                            if (sub == null) continue;
 
-                                    allFiles.Add(new RemoteFile
-                                    {
-                                        Name = subItem.Name,
-                                        Path = subItem.Path,
-                                        Sha = subItem.Sha,
-                                        OwnerNode = node,
-                                        RawUrl = rawUrl
-                                    });
-                                }
+                            foreach (var subItem in sub.Where(c => c.Type == Octokit.ContentType.File))
+                            {
+                                if (IsInternalFile(subItem.Name)) continue;
+                                bag.Add(new RemoteFile
+                                {
+                                    Name = subItem.Name,
+                                    Path = subItem.Path,
+                                    Sha = subItem.Sha,
+                                    OwnerNode = node,
+                                    RawUrl = BuildRawUrl(node, subItem.Path),
+                                });
                             }
                         }
                     }
                     catch (NotFoundException) { }
-                }));
+                    catch (Exception ex)
+                    {
+                        _logger.LogException(LogChannel.Downloader, $"Aggregation failed on [{node.RepoName}]", ex);
+                    }
+                }, cancellationToken));
             }
 
-            await Task.WhenAll(tasks);
-            return allFiles;
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+
+            return bag
+                .OrderBy(f => f.Path, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(f => f.OwnerNode?.RepoName ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
         }
 
-        public async Task DeleteFilesAsync(List<RemoteFile> files)
+        // -------- Rename folder ---------------------------------------------
+        public async Task<string> RenameFolderAsync(
+            string oldRawName,
+            string newDisplayName,
+            CancellationToken cancellationToken = default)
         {
-            var filesByNode = files.GroupBy(f => f.OwnerNode);
-            var tasks = new List<Task>();
+            if (string.IsNullOrWhiteSpace(oldRawName))
+                throw new ArgumentException("oldRawName is required.", nameof(oldRawName));
+            if (string.IsNullOrWhiteSpace(newDisplayName))
+                throw new ArgumentException("newDisplayName is required.", nameof(newDisplayName));
 
-            foreach (var group in filesByNode)
+            var (tag, _) = ParseFolderTag(oldRawName);
+
+            var sanitized = Regex.Replace(newDisplayName.Trim(), "[^a-zA-Z0-9._-]", "_");
+            if (sanitized.Length > 64) sanitized = sanitized.Substring(0, 64);
+            if (string.IsNullOrWhiteSpace(sanitized) || sanitized.All(c => c == '_'))
             {
-                var node = group.Key;
-                foreach (var f in group)
-                {
-                    tasks.Add(node.Client.Repository.Content.DeleteFile(node.Username, node.RepoName, f.Path, new DeleteFileRequest($"Delete {f.Name}", f.Sha)));
-                }
+                var hash = ComputeSha256Hex($"{newDisplayName}|{DateTime.UtcNow.Ticks}");
+                sanitized = "DL_" + hash[..12];
             }
-            await Task.WhenAll(tasks);
+
+            var unique = $"{DateTime.UtcNow:yyyyMMddHHmmss}_{Guid.NewGuid():N}".Substring(0, 21);
+            var newRawName = $"{tag}{FolderTagSeparator}{sanitized}_{unique}";
+
+            CloudNode[] nodes;
+            lock (_activeNodesLock) nodes = _activeNodes.Where(n => n.IsConnected).ToArray();
+
+            var tasks = nodes
+                .Where(n => n.Client != null && n.Username != null)
+                .Select(n => RenameFolderOnNodeAsync(n, oldRawName, newRawName, cancellationToken))
+                .ToList();
+
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+            return newRawName;
         }
 
-        private async Task InjectWorkflowAsync(CloudNode node)
+        private async Task RenameFolderOnNodeAsync(
+            CloudNode node,
+            string oldRawName,
+            string newRawName,
+            CancellationToken cancellationToken)
         {
-            string yamlContent = @"
-name: 'Cloud Leecher Engine'
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-on:
-  workflow_dispatch:
-    inputs:
-      file_url:
-        required: true
-        type: string
-      folder_name:
-        required: true
-        type: string
-      safe_mode:
-        required: true
-        type: string
-permissions:
-  contents: write
-jobs:
-  leech:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Process File
-        run: |
-          sudo apt-get update && sudo apt-get install -y zip
-          URL=""${{ github.event.inputs.file_url }}""
-          FOLDER=""${{ github.event.inputs.folder_name }}""
-          SAFE_MODE=""${{ github.event.inputs.safe_mode }}""
-          
-          RAW_NAME=$(basename ""${URL%%\?*}"" | sed 's/%20/ /g')
-          EXT=""${RAW_NAME##*.}""
-          
-          if [ ""$SAFE_MODE"" == ""true"" ]; then
-            FINAL_FILE=""$FOLDER.$EXT""
-          else
-            NAME_NO_EXT=""${RAW_NAME%.*}""
-            FINAL_FILE=""$NAME_NO_EXT.$EXT""
-          fi
-          
-          curl -L --fail --retry 5 -A ""Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"" --progress-bar -o ""temp_download"" ""$URL""
-          
-          mkdir -p wrap_dir
-          mv ""temp_download"" ""wrap_dir/$FINAL_FILE""
-          cd wrap_dir
-          zip -0 ""../$FOLDER.zip"" ""$FINAL_FILE""
-          cd ..
-          
-          mkdir -p ""downloads/$FOLDER""
-          split -b 90M -d -a 3 ""$FOLDER.zip"" ""downloads/$FOLDER/chunk_""
-          
-          a=1
-          for i in downloads/$FOLDER/chunk_*; do
-            new=$(printf ""downloads/$FOLDER/$FOLDER.zip.%03d"" ""$a"")
-            mv -- ""$i"" ""$new""
-            let a=a+1
-          done
-          
-          git config user.name ""OctoFetchBot""; git config user.email ""bot@octofetch.local""
-          git pull origin main || true
-          git add downloads/
-          git commit -m ""Add $FOLDER ZIP Archive"" || echo ""No changes""
-          git push";
+            var oldPrefix = $"downloads/{oldRawName}/";
+            var newPrefix = $"downloads/{newRawName}/";
 
             try
             {
-                var files = await node.Client.Repository.Content.GetAllContents(node.Username, node.RepoName, ".github/workflows");
-                var file = files?.FirstOrDefault(f => f.Name == "smart-downloader.yml");
-                if (file != null) return;
-            }
-            catch (NotFoundException) { }
+                var branchRef = await node.Client!.Git.Reference
+                    .Get(node.Username!, node.RepoName, $"heads/{node.DefaultBranch}")
+                    .ConfigureAwait(false);
 
-            try { await node.Client.Repository.Content.CreateFile(node.Username, node.RepoName, ".github/workflows/smart-downloader.yml", new CreateFileRequest("Init Architecture", yamlContent)); } catch { }
+                var latestCommit = await node.Client.Git.Commit
+                    .Get(node.Username!, node.RepoName, branchRef.Object.Sha)
+                    .ConfigureAwait(false);
+
+                var fullTree = await node.Client.Git.Tree
+                    .GetRecursive(node.Username!, node.RepoName, latestCommit.Tree.Sha)
+                    .ConfigureAwait(false);
+
+                var oldItems = fullTree.Tree
+                    .Where(t => t.Path.StartsWith(oldPrefix, StringComparison.Ordinal)
+                                && t.Type == TreeType.Blob)
+                    .ToList();
+
+                if (oldItems.Count == 0) return;
+
+                var nt = new NewTree(); 
+                foreach (var it in fullTree.Tree.Where(t => t.Type == TreeType.Blob))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    string newPath;
+                    if (it.Path.StartsWith(oldPrefix, StringComparison.Ordinal))
+                    {
+                        var rest = it.Path.Substring(oldPrefix.Length);
+                        newPath = newPrefix + rest;
+                    }
+                    else
+                    {
+                        newPath = it.Path;
+                    }
+                    nt.Tree.Add(new NewTreeItem
+                    {
+                        Path = newPath,
+                        Mode = it.Mode,
+                        Type = TreeType.Blob,
+                        Sha = it.Sha,
+                    });
+                }
+
+                var createdTree = await node.Client.Git.Tree
+                    .Create(node.Username!, node.RepoName, nt)
+                    .ConfigureAwait(false);
+
+                var newCommit = await node.Client.Git.Commit
+                    .Create(node.Username!, node.RepoName,
+                        new NewCommit($"Rename {oldRawName} → {newRawName}",
+                            createdTree.Sha, latestCommit.Sha))
+                    .ConfigureAwait(false);
+
+                await node.Client.Git.Reference
+                    .Update(node.Username!, node.RepoName,
+                        $"heads/{node.DefaultBranch}",
+                        new ReferenceUpdate(newCommit.Sha))
+                    .ConfigureAwait(false);
+
+                _logger.Log(LogChannel.Settings,
+                    $"📂 Renamed on [{node.RepoName}] ({oldItems.Count} file(s)).");
+            }
+            catch (NotFoundException)
+            {
+            }
+            catch (Exception ex)
+            {
+                _logger.LogException(LogChannel.Settings,
+                    $"Rename failed on [{node.RepoName}]", ex);
+                throw;
+            }
+        }
+
+        public async Task DeleteFilesAsync(
+            IReadOnlyList<RemoteFile> files,
+            CancellationToken cancellationToken = default)
+        {
+            var byNode = files.GroupBy(f => f.OwnerNode);
+            var nodeTasks = new List<Task>();
+
+            foreach (var group in byNode)
+            {
+                var node = group.Key;
+                if (node.Client == null || node.Username == null) continue;
+
+                var fileList = group.ToList();
+                nodeTasks.Add(DeleteFilesOnNodeAsync(node, fileList, cancellationToken));
+            }
+
+            await Task.WhenAll(nodeTasks).ConfigureAwait(false);
+        }
+
+        private async Task DeleteFilesOnNodeAsync(
+            CloudNode node,
+            IReadOnlyList<RemoteFile> files,
+            CancellationToken cancellationToken)
+        {
+            foreach (var file in files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                string sha = file.Sha;
+                try
+                {
+                    var contents = await node.Client!.Repository.Content
+                        .GetAllContentsByRef(node.Username!, node.RepoName, file.Path, node.DefaultBranch)
+                        .ConfigureAwait(false);
+                    if (contents != null && contents.Count > 0)
+                        sha = contents[0].Sha;
+                }
+                catch (NotFoundException)
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"ℹ️ {file.Name} already removed from [{node.RepoName}].");
+                    continue;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogException(LogChannel.Settings,
+                        $"Could not refresh SHA for {file.Name} on [{node.RepoName}]", ex);
+                }
+
+                try
+                {
+                    await node.Client!.Repository.Content.DeleteFile(
+                        node.Username!, node.RepoName, file.Path,
+                        new DeleteFileRequest($"Delete {file.Name}", sha, node.DefaultBranch))
+                        .ConfigureAwait(false);
+
+                    _logger.Log(LogChannel.Settings,
+                        $"🗑️ Removed {file.Name} from [{node.RepoName}].");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogException(LogChannel.Settings,
+                        $"Failed to delete {file.Name} on [{node.RepoName}]", ex);
+                    throw;
+                }
+            }
+        }
+
+        // -------- Delete folders --------------------------------------------
+        public async Task DeleteFoldersAsync(
+            IReadOnlyList<string> rawFolderNames,
+            CancellationToken cancellationToken = default)
+        {
+            if (rawFolderNames == null || rawFolderNames.Count == 0) return;
+
+            CloudNode[] nodes;
+            lock (_activeNodesLock) nodes = _activeNodes.Where(n => n.IsConnected).ToArray();
+
+            var tasks = nodes
+                .Where(n => n.Client != null && n.Username != null)
+                .Select(n => DeleteFoldersOnNodeAsync(n, rawFolderNames, cancellationToken))
+                .ToList();
+
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+        }
+
+        private async Task DeleteFoldersOnNodeAsync(
+            CloudNode node,
+            IReadOnlyList<string> rawFolderNames,
+            CancellationToken cancellationToken)
+        {
+            var prefixes = rawFolderNames
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Select(n => $"downloads/{n}/")
+                .ToArray();
+            if (prefixes.Length == 0) return;
+
+            try
+            {
+                var branchRef = await node.Client!.Git.Reference
+                    .Get(node.Username!, node.RepoName, $"heads/{node.DefaultBranch}")
+                    .ConfigureAwait(false);
+
+                var latestCommit = await node.Client.Git.Commit
+                    .Get(node.Username!, node.RepoName, branchRef.Object.Sha)
+                    .ConfigureAwait(false);
+
+                var fullTree = await node.Client.Git.Tree
+                    .GetRecursive(node.Username!, node.RepoName, latestCommit.Tree.Sha)
+                    .ConfigureAwait(false);
+
+                bool MatchesAnyPrefix(string path) =>
+                    prefixes.Any(p => path.StartsWith(p, StringComparison.Ordinal));
+
+                var doomed = fullTree.Tree
+                    .Where(t => t.Type == TreeType.Blob && MatchesAnyPrefix(t.Path))
+                    .ToList();
+
+                if (doomed.Count == 0) return;
+
+                var nt = new NewTree();
+                foreach (var it in fullTree.Tree.Where(t => t.Type == TreeType.Blob))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (MatchesAnyPrefix(it.Path)) continue;
+
+                    nt.Tree.Add(new NewTreeItem
+                    {
+                        Path = it.Path,
+                        Mode = it.Mode,
+                        Type = TreeType.Blob,
+                        Sha = it.Sha,
+                    });
+                }
+
+                var createdTree = await node.Client.Git.Tree
+                    .Create(node.Username!, node.RepoName, nt)
+                    .ConfigureAwait(false);
+
+                var msg = rawFolderNames.Count == 1
+                    ? $"Delete folder {rawFolderNames[0]}"
+                    : $"Delete {rawFolderNames.Count} folders";
+
+                var newCommit = await node.Client.Git.Commit
+                    .Create(node.Username!, node.RepoName,
+                        new NewCommit(msg, createdTree.Sha, latestCommit.Sha))
+                    .ConfigureAwait(false);
+
+                await node.Client.Git.Reference
+                    .Update(node.Username!, node.RepoName,
+                        $"heads/{node.DefaultBranch}",
+                        new ReferenceUpdate(newCommit.Sha))
+                    .ConfigureAwait(false);
+
+                _logger.Log(LogChannel.Settings,
+                    $"🗑️ Removed {rawFolderNames.Count} folder(s) on [{node.RepoName}] " +
+                    $"({doomed.Count} blob(s) including internal files).");
+            }
+            catch (NotFoundException)
+            {
+
+            }
+            catch (Exception ex)
+            {
+                _logger.LogException(LogChannel.Settings,
+                    $"Folder delete failed on [{node.RepoName}]", ex);
+                throw;
+            }
+        }
+
+        // -------- Recent commit listing (for usage charts) ------------------
+        public async Task<IReadOnlyList<DownloadCommitInfo>> GetRecentDownloadCommitsAsync(
+            DateTime sinceUtc,
+            CancellationToken cancellationToken = default)
+        {
+            CloudNode[] nodes;
+            lock (_activeNodesLock) nodes = _activeNodes.Where(n => n.IsConnected).ToArray();
+
+            var bag = new ConcurrentBag<DownloadCommitInfo>();
+            var tasks = nodes
+                .Where(n => n.Client != null && n.Username != null)
+                .Select(n => Task.Run(async () =>
+                {
+                    try
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var commits = await n.Client!.Repository.Commit
+                            .GetAll(n.Username!, n.RepoName, new CommitRequest
+                            {
+                                Path = "downloads",
+                                Since = sinceUtc,
+                            }, new ApiOptions { PageSize = 100, PageCount = 3 })
+                            .ConfigureAwait(false);
+
+                        if (commits == null) return;
+                        foreach (var c in commits)
+                        {
+                            var when = c.Commit?.Committer?.Date.UtcDateTime
+                                       ?? c.Commit?.Author?.Date.UtcDateTime
+                                       ?? DateTime.UtcNow;
+
+                            var author = c.Author?.Login
+                                ?? c.Commit?.Author?.Name
+                                ?? string.Empty;
+
+                            bag.Add(new DownloadCommitInfo
+                            {
+                                Sha = c.Sha,
+                                CommitDateUtc = when,
+                                RepoName = n.RepoName,
+                                Message = c.Commit?.Message ?? string.Empty,
+                                AuthorLogin = author,
+                            });
+                        }
+                    }
+                    catch (NotFoundException) { }
+                    catch (Exception ex)
+                    {
+                        _logger.LogException(LogChannel.Settings,
+                            $"Commit history failed on [{n.RepoName}]", ex);
+                    }
+                }, cancellationToken))
+                .ToList();
+
+            await Task.WhenAll(tasks).ConfigureAwait(false);
+            return bag
+                .OrderByDescending(c => c.CommitDateUtc)
+                .ToArray();
         }
     }
 }

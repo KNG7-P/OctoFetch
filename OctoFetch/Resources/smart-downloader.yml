@@ -1,0 +1,210 @@
+﻿# OctoFetch-YAML-Version: 2
+
+name: 'Cloud Leecher Engine'
+ 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+ 
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        required: true
+        type: string
+      folder_name:
+        required: true
+        type: string
+      safe_mode:
+        required: true
+        type: string
+      chunk_size:
+        required: false
+        type: string
+        default: "90M"
+ 
+permissions:
+  contents: write
+ 
+concurrency:
+  group: leech-${{ github.event.inputs.folder_name }}
+  cancel-in-progress: false
+ 
+jobs:
+  leech:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+
+      - name: Checkout (sparse, fast)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            .github
+          sparse-checkout-cone-mode: false
+ 
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-cache-${{ runner.os }}-aria2
+ 
+      - name: Fast install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends aria2 zip coreutils
+ 
+      - name: Process File
+        env:
+          URL: ${{ github.event.inputs.file_url }}
+          FOLDER_INPUT: ${{ github.event.inputs.folder_name }}
+          SAFE_MODE: ${{ github.event.inputs.safe_mode }}
+          CHUNK_SIZE: ${{ github.event.inputs.chunk_size }}
+        run: |
+          set -euo pipefail
+ 
+          FOLDER=$(printf '%s' "$FOLDER_INPUT" | tr -c 'A-Za-z0-9._-' '_')
+          if [ ${#FOLDER} -gt 100 ]; then
+            FOLDER="${FOLDER:0:100}"
+          fi
+          if [ -z "$FOLDER" ]; then
+            FOLDER="DL_$(date +%Y%m%d%H%M%S)"
+          fi
+
+          echo "FOLDER=$FOLDER" >> "$GITHUB_ENV"
+ 
+          RAW_NAME=$(basename "${URL%%\?*}" | sed 's/%20/ /g')
+
+          RAW_NAME=$(printf '%s' "$RAW_NAME" | tr -d '\000-\037')
+ 
+          if [ ${#RAW_NAME} -gt 180 ]; then
+            RAW_NAME="${RAW_NAME:0:180}"
+          fi
+ 
+          EXT="${RAW_NAME##*.}"
+
+          if [ ${#EXT} -gt 12 ] || [ "$EXT" = "$RAW_NAME" ]; then
+            EXT="bin"
+          fi
+ 
+          if [ "$SAFE_MODE" = "true" ]; then
+            FINAL_FILE="$FOLDER.$EXT"
+          else
+            NAME_NO_EXT="${RAW_NAME%.*}"
+
+            if [ ${#NAME_NO_EXT} -gt 100 ]; then
+              NAME_NO_EXT="${NAME_NO_EXT:0:100}"
+            fi
+
+            NAME_NO_EXT=$(printf '%s' "$NAME_NO_EXT" | tr -c 'A-Za-z0-9._-' '_')
+            if [ -z "$NAME_NO_EXT" ]; then
+              NAME_NO_EXT="$FOLDER"
+            fi
+            FINAL_FILE="$NAME_NO_EXT.$EXT"
+          fi
+ 
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+ 
+          aria2c \
+            --console-log-level=warn \
+            --summary-interval=5 \
+            --download-result=hide \
+            -x 16 -s 16 -k 1M \
+            --max-tries=5 \
+            --retry-wait=3 \
+            --connect-timeout=20 \
+            --timeout=60 \
+            --user-agent="$UA" \
+            --auto-file-renaming=false \
+            --allow-overwrite=true \
+            --check-certificate=true \
+            -o "temp_download" \
+            "$URL"
+ 
+          mkdir -p wrap_dir
+          mv "temp_download" "wrap_dir/$FINAL_FILE"
+          (
+            cd wrap_dir
+            zip -0 "../$FOLDER.zip" "$FINAL_FILE"
+          )
+ 
+          mkdir -p "downloads/$FOLDER"
+          split -b "$CHUNK_SIZE" -d -a 3 "$FOLDER.zip" "downloads/$FOLDER/chunk_"
+ 
+          (
+            cd "downloads/$FOLDER"
+            sha256sum chunk_* > checksums.sha256
+ 
+            a=1
+            for i in chunk_*; do
+              new=$(printf "%s.zip.%03d" "$FOLDER" "$a")
+              mv -- "$i" "$new"
+              a=$((a + 1))
+            done
+ 
+            sha256sum *.zip.* > checksums.sha256
+          )
+ 
+      - name: Commit results in batches
+        env:
+          BATCH_SIZE: 5
+        run: |
+          set -euo pipefail
+ 
+          git config user.name "OctoFetchBot"
+          git config user.email "bot@octofetch.local"
+
+          git config advice.updateSparsePath false
+
+          git config http.postBuffer 524288000
+          git config http.lowSpeedLimit 1000
+          git config http.lowSpeedTime 600
+          git config core.compression 0
+          git config pack.windowMemory "100m"
+          git config pack.threads "1"
+ 
+          mapfile -t CHUNKS < <(ls "downloads/$FOLDER"/*.zip.* 2>/dev/null | sort)
+          ALL_FILES=( "${CHUNKS[@]}" "downloads/$FOLDER/checksums.sha256" )
+ 
+          TOTAL=${#ALL_FILES[@]}
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "Nothing to commit." >&2
+            exit 1
+          fi
+ 
+          push_with_retry() {
+            local label="$1"
+            for attempt in 1 2 3 4 5 6 7; do
+              git fetch origin >/dev/null 2>&1 || true
+              git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)" >/dev/null 2>&1 || true
+              if git push; then
+                echo "  ✓ $label pushed on attempt $attempt"
+                return 0
+              fi
+              backoff=$((attempt * 5))
+              echo "  · push retry in ${backoff}s ($label, attempt $attempt)..."
+              sleep "$backoff"
+            done
+            echo "  ✗ $label FAILED after 7 attempts" >&2
+            return 1
+          }
+ 
+          batch_n=0
+          for ((i=0; i<TOTAL; i+=BATCH_SIZE)); do
+            batch_n=$((batch_n + 1))
+            slice=( "${ALL_FILES[@]:i:BATCH_SIZE}" )
+            echo "▶ Batch $batch_n: ${#slice[@]} file(s)"
+ 
+            git add --sparse -- "${slice[@]}"
+            if git diff --cached --quiet; then
+              echo "  · nothing staged for batch $batch_n, skipping."
+              continue
+            fi
+ 
+            git commit -m "Add $FOLDER (batch $batch_n)"
+            push_with_retry "batch $batch_n" || exit 1
+          done
+ 
+          echo "✅ All batches pushed ($batch_n total)."
+ 
