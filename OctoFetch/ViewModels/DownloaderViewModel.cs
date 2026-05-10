@@ -6,7 +6,6 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -23,14 +22,8 @@ namespace OctoFetch.ViewModels
         private readonly AppSettings _settings;
         private readonly IGitHubService _gitHubService;
 
-        private static readonly HttpClient Http = new(new HttpClientHandler
-        {
-            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
-            AutomaticDecompression = System.Net.DecompressionMethods.All,
-        })
-        {
-            Timeout = TimeSpan.FromMinutes(30),
-        };
+        private static string GetCurlPath() =>
+            Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "GitCore", "curl.exe");
 
         private readonly SemaphoreSlim _concurrencySemaphore;
         private readonly ConcurrentDictionary<string, CancellationTokenSource> _cancellations = new();
@@ -157,6 +150,7 @@ namespace OctoFetch.ViewModels
             var partFiles = new List<string>();
             long totalDownloaded = 0;
             var sw = Stopwatch.StartNew();
+            var curlPath = GetCurlPath();
 
             for (int i = 0; i < item.Parts.Count; i++)
             {
@@ -174,90 +168,88 @@ namespace OctoFetch.ViewModels
                 partFiles.Add(partPath);
 
                 var url = part.RawUrl;
+                var args = $"-L -k --retry 3 --retry-delay 2 --connect-timeout 30 -o \"{partPath}\"";
+
                 if (part.OwnerNode != null && part.OwnerNode.IsPrivate && !string.IsNullOrEmpty(part.OwnerNode.Token))
+                    args += $" -H \"Authorization: token {part.OwnerNode.Token}\"";
+
+                args += $" \"{url}\"";
+
+                var psi = new ProcessStartInfo
                 {
-                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
-                    request.Headers.Authorization =
-                        new System.Net.Http.Headers.AuthenticationHeaderValue("token", part.OwnerNode.Token);
+                    FileName = curlPath,
+                    Arguments = args,
+                    WorkingDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "GitCore"),
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardError = true,
+                };
 
-                    using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct)
-                        .ConfigureAwait(false);
-                    response.EnsureSuccessStatusCode();
+                using var process = Process.Start(psi)
+                    ?? throw new InvalidOperationException("Failed to start curl.exe");
 
-                    var contentLength = response.Content.Headers.ContentLength ?? 0;
-                    item.TotalBytes += contentLength;
-                    item.SizeText = FormatBytes(item.TotalBytes);
-
-                    await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-                    await using var fs = File.Create(partPath);
-                    var buffer = new byte[81920];
-                    int read;
-                    while ((read = await stream.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
-                    {
-                        ct.ThrowIfCancellationRequested();
-                        while (item.Status == DownloadStatus.Paused)
-                            await Task.Delay(500, ct).ConfigureAwait(false);
-
-                        await fs.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
-                        totalDownloaded += read;
-                        item.DownloadedBytes = totalDownloaded;
-
-                        var elapsed = sw.Elapsed.TotalSeconds;
-                        if (elapsed > 0.5)
-                        {
-                            item.SpeedBytesPerSec = totalDownloaded / elapsed;
-                            item.SpeedText = FormatSpeed(item.SpeedBytesPerSec);
-                            if (item.TotalBytes > 0 && item.SpeedBytesPerSec > 0)
-                            {
-                                var remaining = (item.TotalBytes - totalDownloaded) / item.SpeedBytesPerSec;
-                                item.EtaText = FormatEta(remaining);
-                            }
-                        }
-                        item.ProgressPercent = item.TotalBytes > 0
-                            ? (double)totalDownloaded / item.TotalBytes * 100.0
-                            : (double)(i * 100 + 100) / item.Parts.Count;
-                    }
-                }
-                else
+                // Monitor file size for progress while curl downloads
+                while (!process.HasExited)
                 {
-                    using var response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct)
-                        .ConfigureAwait(false);
-                    response.EnsureSuccessStatusCode();
-
-                    var contentLength = response.Content.Headers.ContentLength ?? 0;
-                    item.TotalBytes += contentLength;
-                    item.SizeText = FormatBytes(item.TotalBytes);
-
-                    await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-                    await using var fs = File.Create(partPath);
-                    var buffer = new byte[81920];
-                    int read;
-                    while ((read = await stream.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+                    ct.ThrowIfCancellationRequested();
+                    while (item.Status == DownloadStatus.Paused)
                     {
-                        ct.ThrowIfCancellationRequested();
-                        while (item.Status == DownloadStatus.Paused)
-                            await Task.Delay(500, ct).ConfigureAwait(false);
-
-                        await fs.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
-                        totalDownloaded += read;
-                        item.DownloadedBytes = totalDownloaded;
-
-                        var elapsed = sw.Elapsed.TotalSeconds;
-                        if (elapsed > 0.5)
-                        {
-                            item.SpeedBytesPerSec = totalDownloaded / elapsed;
-                            item.SpeedText = FormatSpeed(item.SpeedBytesPerSec);
-                            if (item.TotalBytes > 0 && item.SpeedBytesPerSec > 0)
-                            {
-                                var remaining = (item.TotalBytes - totalDownloaded) / item.SpeedBytesPerSec;
-                                item.EtaText = FormatEta(remaining);
-                            }
-                        }
-                        item.ProgressPercent = item.TotalBytes > 0
-                            ? (double)totalDownloaded / item.TotalBytes * 100.0
-                            : (double)(i * 100 + 100) / item.Parts.Count;
+                        await Task.Delay(500, ct).ConfigureAwait(false);
                     }
+
+                    if (File.Exists(partPath))
+                    {
+                        try
+                        {
+                            var fi = new FileInfo(partPath);
+                            var currentSize = fi.Length;
+                            totalDownloaded = partFiles.Take(i).Sum(f =>
+                            {
+                                try { return File.Exists(f) ? new FileInfo(f).Length : 0; }
+                                catch { return 0L; }
+                            }) + currentSize;
+                            item.DownloadedBytes = totalDownloaded;
+
+                            var elapsed = sw.Elapsed.TotalSeconds;
+                            if (elapsed > 0.5)
+                            {
+                                item.SpeedBytesPerSec = totalDownloaded / elapsed;
+                                item.SpeedText = FormatSpeed(item.SpeedBytesPerSec);
+                                if (item.TotalBytes > 0 && item.SpeedBytesPerSec > 0)
+                                {
+                                    var remaining = (item.TotalBytes - totalDownloaded) / item.SpeedBytesPerSec;
+                                    item.EtaText = FormatEta(remaining);
+                                }
+                            }
+                            item.ProgressPercent = item.TotalBytes > 0
+                                ? (double)totalDownloaded / item.TotalBytes * 100.0
+                                : (double)(i * 100 + (currentSize > 0 ? 50 : 0)) / item.Parts.Count;
+                        }
+                        catch { /* file may be locked briefly */ }
+                    }
+                    await Task.Delay(300, ct).ConfigureAwait(false);
                 }
+
+                var exitCode = process.ExitCode;
+                if (exitCode != 0)
+                {
+                    var stderr = await process.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
+                    throw new IOException($"curl failed (exit {exitCode}): {stderr.Trim()}");
+                }
+
+                if (!File.Exists(partPath) || new FileInfo(partPath).Length == 0)
+                    throw new IOException($"Downloaded file is empty: {part.Name}");
+
+                // Update total size after download
+                var partSize = new FileInfo(partPath).Length;
+                if (i == 0) item.TotalBytes = partSize * item.Parts.Count; // estimate total
+                item.SizeText = FormatBytes(item.TotalBytes);
+                totalDownloaded = partFiles.Take(i + 1).Sum(f =>
+                {
+                    try { return File.Exists(f) ? new FileInfo(f).Length : 0; }
+                    catch { return 0L; }
+                });
+                item.DownloadedBytes = totalDownloaded;
             }
 
             // Merge parts
