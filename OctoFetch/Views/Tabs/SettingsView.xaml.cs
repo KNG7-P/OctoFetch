@@ -19,18 +19,17 @@ namespace OctoFetch.Views.Tabs
         {
             if (DataContext is not MainViewModel vm) return;
 
-            var dlg = new System.Windows.Forms.FolderBrowserDialog
+            var dlg = new Microsoft.Win32.OpenFolderDialog
             {
-                Description = "Select Oct-Download output folder",
-                UseDescriptionForTitle = true,
-                ShowNewFolderButton = true,
+                Title = "Select Oct-Download output folder",
+                Multiselect = false,
             };
             if (!string.IsNullOrWhiteSpace(vm.Settings.DownloadFolderPath))
-                dlg.SelectedPath = vm.Settings.DownloadFolderPath;
+                dlg.InitialDirectory = vm.Settings.DownloadFolderPath;
 
-            if (dlg.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            if (dlg.ShowDialog() == true)
             {
-                vm.Settings.DownloadFolderPath = dlg.SelectedPath;
+                vm.Settings.DownloadFolderPath = dlg.FolderName;
                 vm.SaveSettingsSilently();
             }
         }
