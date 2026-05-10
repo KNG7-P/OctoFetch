@@ -35,10 +35,12 @@ namespace OctoFetch.Models
         [ObservableProperty] private int _currentPart;
         [ObservableProperty] private int _totalParts;
 
+        [ObservableProperty] private bool _isFinished;
+
         public string StatusText => Status switch
         {
             DownloadStatus.Queued => "Queued",
-            DownloadStatus.Downloading => $"Downloading ({CurrentPart}/{TotalParts})",
+            DownloadStatus.Downloading => "Downloading…",
             DownloadStatus.Merging => "Merging…",
             DownloadStatus.Completed => "Completed",
             DownloadStatus.Failed => "Failed",

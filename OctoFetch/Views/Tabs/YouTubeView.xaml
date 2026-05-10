@@ -121,29 +121,42 @@
                            VerticalAlignment="Center"/>
             </Grid>
 
-            <!-- Loading indicator -->
-            <Border Grid.Row="0" Height="3" VerticalAlignment="Bottom" Margin="0,0,0,4"
-                    CornerRadius="2" ClipToBounds="True"
-                    Visibility="{Binding IsSearching, Converter={StaticResource BoolToVisibility}}">
-                <Border x:Name="SearchPulse" Background="{StaticResource AccentGradient}"
-                        CornerRadius="2" Margin="-200,0,0,0">
-                    <Border.RenderTransform>
-                        <TranslateTransform x:Name="PulseTranslate"/>
-                    </Border.RenderTransform>
-                    <Border.Triggers>
-                        <EventTrigger RoutedEvent="Border.Loaded">
+            <!-- Loading spinner -->
+            <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Left"
+                        Margin="0,0,0,4"
+                        Visibility="{Binding IsSearching, Converter={StaticResource BoolToVisibility}}">
+                <md:PackIcon Kind="Loading" Width="16" Height="16"
+                             Foreground="{StaticResource AccentCyanBrush}"
+                             VerticalAlignment="Center" Margin="0,0,6,0"
+                             RenderTransformOrigin="0.5,0.5">
+                    <md:PackIcon.RenderTransform>
+                        <RotateTransform x:Name="YtSpinnerRotate"/>
+                    </md:PackIcon.RenderTransform>
+                    <md:PackIcon.Triggers>
+                        <EventTrigger RoutedEvent="FrameworkElement.Loaded">
                             <BeginStoryboard>
                                 <Storyboard RepeatBehavior="Forever">
-                                    <DoubleAnimation Storyboard.TargetName="PulseTranslate"
-                                                     Storyboard.TargetProperty="X"
-                                                     From="-400" To="800"
-                                                     Duration="0:0:1.2"/>
+                                    <DoubleAnimation Storyboard.TargetName="YtSpinnerRotate"
+                                                     Storyboard.TargetProperty="Angle"
+                                                     From="0" To="360" Duration="0:0:1"/>
                                 </Storyboard>
                             </BeginStoryboard>
                         </EventTrigger>
-                    </Border.Triggers>
-                </Border>
-            </Border>
+                    </md:PackIcon.Triggers>
+                </md:PackIcon>
+                <TextBlock Text="Searching…" Foreground="{StaticResource TextMuted}" FontSize="11.5"
+                           VerticalAlignment="Center"/>
+            </StackPanel>
+
+            <!-- Video filter (All / Long / Shorts) -->
+            <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right"
+                        Margin="0,0,0,4">
+                <TextBlock Text="Filter:" Foreground="{StaticResource TextMuted}" FontSize="11"
+                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                <ComboBox Width="90" Style="{StaticResource CompactComboBox}"
+                          ItemsSource="{Binding VideoFilterOptions}"
+                          SelectedItem="{Binding VideoFilter}"/>
+            </StackPanel>
 
             <!-- Channel results (shown above videos when not in channel view) -->
             <Grid Grid.Row="1">
@@ -191,7 +204,7 @@
 
                 <!-- Video list -->
                 <ListView Grid.Row="1" Background="Transparent" BorderThickness="0"
-                          ItemsSource="{Binding Videos}"
+                          ItemsSource="{Binding FilteredVideos}"
                           VirtualizingPanel.IsVirtualizing="True"
                           VirtualizingPanel.VirtualizationMode="Recycling"
                           ScrollViewer.HorizontalScrollBarVisibility="Disabled"

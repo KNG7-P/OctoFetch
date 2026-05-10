@@ -163,6 +163,7 @@
                                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
                                     <Border Background="#FF352D00" CornerRadius="6"
                                             Padding="6,3" Margin="0,0,6,0"
+                                            VerticalAlignment="Center"
                                             Visibility="{Binding IsNew, Converter={StaticResource BoolToVisibility}}">
                                         <StackPanel Orientation="Horizontal">
                                             <md:PackIcon Kind="StarFourPoints" Width="11" Height="11"
@@ -173,10 +174,12 @@
                                         </StackPanel>
                                     </Border>
                                     <Border Background="#FF20202E" CornerRadius="6"
-                                            Padding="8,3" Margin="0,0,6,0">
+                                            Padding="8,3" Margin="0,0,6,0"
+                                            VerticalAlignment="Center">
                                         <TextBlock Text="{Binding Tag}"
                                                Foreground="{StaticResource TextSecondary}"
-                                               FontSize="10.5" FontWeight="SemiBold"/>
+                                               FontSize="10.5" FontWeight="SemiBold"
+                                               VerticalAlignment="Center"/>
                                     </Border>
                                     <Button Style="{StaticResource MaterialDesignIconButton}"
                                             Width="30" Height="30"

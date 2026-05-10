@@ -33,21 +33,6 @@
                            Style="{StaticResource PageSubtitle}"/>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal">
-                <Button Style="{StaticResource MaterialDesignOutlinedButton}"
-                        BorderBrush="{StaticResource AccentCyanBrush}"
-                        Foreground="{StaticResource AccentCyanBrush}"
-                        md:ButtonAssist.CornerRadius="10"
-                        Padding="14,5" Margin="0,0,8,0"
-                        IsEnabled="{Binding IsImportingHistory, Converter={StaticResource InverseBool}}"
-                        Command="{Binding ImportHistoryCommand}"
-                        ToolTip="Pull the last 180 days of download history from GitHub">
-                    <StackPanel Orientation="Horizontal">
-                        <md:PackIcon Kind="DatabaseImport" Width="14" Height="14"
-                                     Margin="0,0,6,0" VerticalAlignment="Center"/>
-                        <TextBlock Text="Import history" VerticalAlignment="Center" FontSize="12"/>
-                    </StackPanel>
-                </Button>
-
                 <Button Style="{StaticResource MaterialDesignFloatingActionMiniButton}"
                         Background="{StaticResource AccentGradient}"
                         BorderBrush="{StaticResource AccentGradient}"

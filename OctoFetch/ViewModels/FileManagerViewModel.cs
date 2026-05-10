@@ -136,14 +136,16 @@ namespace OctoFetch.ViewModels
                     {
                         var (tag, displayName) = GitHubService.ParseFolderTag(g.Key);
                         _settings.FolderUploadTimes.TryGetValue(g.Key, out var uploadTime);
+                        var files = g.OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
                         return new CloudItem
                         {
                             Name = displayName,
                             RawName = g.Key,
                             IsFolder = true,
                             Tag = tag,
-                            Files = g.OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+                            Files = files,
                             NodeCount = g.Select(f => f.OwnerNode).Distinct().Count(),
+                            TotalSizeBytes = files.Sum(f => f.SizeBytes),
                             UploadedAt = uploadTime == default ? null : uploadTime,
                             IsNew = string.Equals(g.Key, _settings.LastUploadedFolder, StringComparison.Ordinal),
                         };

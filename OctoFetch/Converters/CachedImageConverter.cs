@@ -11,7 +11,8 @@ namespace OctoFetch.Converters
     public class CachedImageConverter : IValueConverter
     {
         private static readonly ConcurrentDictionary<string, BitmapImage> Cache = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(10) };
+        private static readonly ConcurrentDictionary<string, bool> Loading = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(15) };
 
         public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
@@ -21,23 +22,10 @@ namespace OctoFetch.Converters
             if (Cache.TryGetValue(url, out var cached))
                 return cached;
 
-            var placeholder = CreatePlaceholder(url);
-            _ = LoadAsync(url);
-            return placeholder;
-        }
+            if (Loading.TryAdd(url, true))
+                _ = LoadAsync(url);
 
-        private static BitmapImage CreatePlaceholder(string url)
-        {
-            var bmp = new BitmapImage();
-            bmp.BeginInit();
-            bmp.UriSource = new Uri(url, UriKind.Absolute);
-            bmp.CacheOption = BitmapCacheOption.OnLoad;
-            bmp.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
-            bmp.DecodePixelWidth = 320;
-            bmp.EndInit();
-            if (bmp.CanFreeze) bmp.Freeze();
-            Cache.TryAdd(url, bmp);
-            return bmp;
+            return null;
         }
 
         private static async Task LoadAsync(string url)
@@ -60,7 +48,7 @@ namespace OctoFetch.Converters
             }
             catch
             {
-                // Keep whatever was already cached
+                Loading.TryRemove(url, out _);
             }
         }
 

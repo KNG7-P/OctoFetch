@@ -18,7 +18,8 @@ namespace OctoFetch.Models
 
         // Download manager settings
         public int MaxConcurrentDownloads { get; set; } = 2;
-        public string DownloadFolderPath { get; set; } = string.Empty;
+        public string DownloadFolderPath { get; set; } = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "OctoFetch");
 
         // Upload tracking — folder raw-name → upload UTC
         public Dictionary<string, DateTime> FolderUploadTimes { get; set; } = new();

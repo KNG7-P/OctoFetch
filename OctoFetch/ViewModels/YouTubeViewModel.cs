@@ -1,9 +1,11 @@
 using System;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Data;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using OctoFetch.Models;
@@ -31,8 +33,12 @@ namespace OctoFetch.ViewModels
         [ObservableProperty] private string _channelSubs = string.Empty;
 
         [ObservableProperty] private bool _hasMoreResults;
+        [ObservableProperty] private string _videoFilter = "All";
+
+        public ObservableCollection<string> VideoFilterOptions { get; } = new() { "All", "Long", "Shorts" };
 
         public ObservableCollection<YouTubeVideoItem> Videos { get; } = new();
+        public ICollectionView FilteredVideos { get; }
         public ObservableCollection<YouTubeChannelItem> Channels { get; } = new();
 
         private string? _nextPageToken;
@@ -56,6 +62,22 @@ namespace OctoFetch.ViewModels
             _logger = logger;
             _toastService = toastService;
             _persistSettings = persistSettings;
+
+            FilteredVideos = CollectionViewSource.GetDefaultView(Videos);
+            FilteredVideos.Filter = MatchesVideoFilter;
+        }
+
+        partial void OnVideoFilterChanged(string value) => FilteredVideos.Refresh();
+
+        private bool MatchesVideoFilter(object o)
+        {
+            if (o is not YouTubeVideoItem v) return false;
+            return VideoFilter switch
+            {
+                "Long" => !v.IsShort,
+                "Shorts" => v.IsShort,
+                _ => true,
+            };
         }
 
         [RelayCommand]

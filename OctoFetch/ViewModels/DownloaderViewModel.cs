@@ -126,6 +126,7 @@ namespace OctoFetch.ViewModels
             catch (Exception ex)
             {
                 item.Status = DownloadStatus.Failed;
+                item.IsFinished = true;
                 item.ProgressText = $"Error: {ex.Message}";
                 _logger.LogException(LogChannel.Downloader, $"Download failed: {item.DisplayName}", ex);
             }
@@ -148,9 +149,10 @@ namespace OctoFetch.ViewModels
             Directory.CreateDirectory(tempDir);
 
             var partFiles = new List<string>();
-            long totalDownloaded = 0;
+            long completedPartsBytes = 0;
             var sw = Stopwatch.StartNew();
             var curlPath = GetCurlPath();
+            var lastUiUpdate = DateTime.MinValue;
 
             for (int i = 0; i < item.Parts.Count; i++)
             {
@@ -162,7 +164,7 @@ namespace OctoFetch.ViewModels
 
                 var part = item.Parts[i];
                 item.CurrentPart = i + 1;
-                item.ProgressText = $"Downloading part {i + 1}/{item.Parts.Count}…";
+                item.ProgressText = "Downloading…";
 
                 var partPath = Path.Combine(tempDir, part.Name);
                 partFiles.Add(partPath);
@@ -188,7 +190,6 @@ namespace OctoFetch.ViewModels
                 using var process = Process.Start(psi)
                     ?? throw new InvalidOperationException("Failed to start curl.exe");
 
-                // Monitor file size for progress while curl downloads
                 while (!process.HasExited)
                 {
                     ct.ThrowIfCancellationRequested();
@@ -197,21 +198,18 @@ namespace OctoFetch.ViewModels
                         await Task.Delay(500, ct).ConfigureAwait(false);
                     }
 
-                    if (File.Exists(partPath))
+                    var now = DateTime.UtcNow;
+                    if ((now - lastUiUpdate).TotalMilliseconds >= 500 && File.Exists(partPath))
                     {
+                        lastUiUpdate = now;
                         try
                         {
-                            var fi = new FileInfo(partPath);
-                            var currentSize = fi.Length;
-                            totalDownloaded = partFiles.Take(i).Sum(f =>
-                            {
-                                try { return File.Exists(f) ? new FileInfo(f).Length : 0; }
-                                catch { return 0L; }
-                            }) + currentSize;
+                            var currentSize = new FileInfo(partPath).Length;
+                            var totalDownloaded = completedPartsBytes + currentSize;
                             item.DownloadedBytes = totalDownloaded;
 
                             var elapsed = sw.Elapsed.TotalSeconds;
-                            if (elapsed > 0.5)
+                            if (elapsed > 1.0)
                             {
                                 item.SpeedBytesPerSec = totalDownloaded / elapsed;
                                 item.SpeedText = FormatSpeed(item.SpeedBytesPerSec);
@@ -222,12 +220,13 @@ namespace OctoFetch.ViewModels
                                 }
                             }
                             item.ProgressPercent = item.TotalBytes > 0
-                                ? (double)totalDownloaded / item.TotalBytes * 100.0
+                                ? Math.Min((double)totalDownloaded / item.TotalBytes * 100.0, 99.0)
                                 : (double)(i * 100 + (currentSize > 0 ? 50 : 0)) / item.Parts.Count;
+                            item.SizeText = $"{FormatBytes(totalDownloaded)} / {(item.TotalBytes > 0 ? FormatBytes(item.TotalBytes) : "?")}";
                         }
                         catch { /* file may be locked briefly */ }
                     }
-                    await Task.Delay(300, ct).ConfigureAwait(false);
+                    await Task.Delay(500, ct).ConfigureAwait(false);
                 }
 
                 var exitCode = process.ExitCode;
@@ -240,16 +239,11 @@ namespace OctoFetch.ViewModels
                 if (!File.Exists(partPath) || new FileInfo(partPath).Length == 0)
                     throw new IOException($"Downloaded file is empty: {part.Name}");
 
-                // Update total size after download
                 var partSize = new FileInfo(partPath).Length;
-                if (i == 0) item.TotalBytes = partSize * item.Parts.Count; // estimate total
-                item.SizeText = FormatBytes(item.TotalBytes);
-                totalDownloaded = partFiles.Take(i + 1).Sum(f =>
-                {
-                    try { return File.Exists(f) ? new FileInfo(f).Length : 0; }
-                    catch { return 0L; }
-                });
-                item.DownloadedBytes = totalDownloaded;
+                completedPartsBytes += partSize;
+                if (i == 0) item.TotalBytes = partSize * item.Parts.Count;
+                item.DownloadedBytes = completedPartsBytes;
+                item.SizeText = $"{FormatBytes(completedPartsBytes)} / {FormatBytes(item.TotalBytes)}";
             }
 
             // Merge parts
@@ -339,23 +333,29 @@ namespace OctoFetch.ViewModels
             try { Directory.Delete(tempDir, true); } catch { }
 
             item.Status = DownloadStatus.Completed;
+            item.IsFinished = true;
             item.ProgressText = $"Saved to {category}";
             item.ProgressPercent = 100;
+            item.SpeedText = string.Empty;
+            item.EtaText = string.Empty;
             _logger.Log(LogChannel.Downloader, $"✅ Downloaded: {item.DisplayName} → {finalOutputPath}");
         }
 
         private string GetOutputDirectory()
         {
-            if (!string.IsNullOrWhiteSpace(_settings.DownloadFolderPath)
-                && Directory.Exists(Path.GetDirectoryName(_settings.DownloadFolderPath) ?? _settings.DownloadFolderPath))
+            if (!string.IsNullOrWhiteSpace(_settings.DownloadFolderPath))
             {
-                Directory.CreateDirectory(_settings.DownloadFolderPath);
-                return _settings.DownloadFolderPath;
+                try
+                {
+                    Directory.CreateDirectory(_settings.DownloadFolderPath);
+                    return _settings.DownloadFolderPath;
+                }
+                catch { /* fall through to default */ }
             }
 
             var downloads = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
-            var octDir = Path.Combine(downloads, "Oct-Download");
+            var octDir = Path.Combine(downloads, "OctoFetch");
             Directory.CreateDirectory(octDir);
             return octDir;
         }
@@ -388,6 +388,7 @@ namespace OctoFetch.ViewModels
                 try { cts.Cancel(); } catch { }
             }
             item.Status = DownloadStatus.Cancelled;
+            item.IsFinished = true;
             item.ProgressText = "Cancelled";
         }
 

@@ -33,6 +33,7 @@ namespace OctoFetch.Models
             }
         }
 
+        public bool IsShort => DurationSeconds > 0 && DurationSeconds <= 60;
         public string Url => $"https://www.youtube.com/watch?v={VideoId}";
     }
 

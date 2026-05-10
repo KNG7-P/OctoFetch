@@ -14,16 +14,28 @@ namespace OctoFetch.Models
         public DateTime? UploadedAt { get; set; }
         public bool IsNew { get; set; }
 
+        public long TotalSizeBytes { get; set; }
+
         public string SubText
         {
             get
             {
                 if (!IsFolder) return $"Server: {OwnerNode?.RepoName}";
                 var parts = new List<string> { $"{NodeCount} server(s)", Tag };
+                if (TotalSizeBytes > 0)
+                    parts.Add(FormatBytes(TotalSizeBytes));
                 if (UploadedAt.HasValue)
                     parts.Add(UploadedAt.Value.ToString("yyyy-MM-dd HH:mm"));
-                return string.Join(" • ", parts);
+                return string.Join(" \u2022 ", parts);
             }
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            if (bytes < 1024) return $"{bytes} B";
+            if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+            if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MB";
+            return $"{bytes / (1024.0 * 1024 * 1024):F2} GB";
         }
 
         public RemoteFile? FileRef { get; set; }

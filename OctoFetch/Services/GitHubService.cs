@@ -983,6 +983,7 @@ namespace OctoFetch.Services
                                     Name = subItem.Name,
                                     Path = subItem.Path,
                                     Sha = subItem.Sha,
+                                    SizeBytes = subItem.Size,
                                     OwnerNode = node,
                                     RawUrl = BuildRawUrl(node, subItem.Path),
                                 });
