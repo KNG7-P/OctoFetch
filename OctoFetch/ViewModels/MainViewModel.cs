@@ -36,7 +36,6 @@ namespace OctoFetch.ViewModels
         public ObservableCollection<NodeUsageStat> ClusterStats { get; } = new();
         [ObservableProperty] private string _clusterStatsSummary = "No stats yet. Click refresh.";
         [ObservableProperty] private bool _isRefreshingStats;
-        [ObservableProperty] private bool _isImportingHistory;
 
         private bool _statsLoadedOnce;
 
@@ -242,43 +241,6 @@ namespace OctoFetch.ViewModels
             finally
             {
                 IsRefreshingStats = false;
-            }
-        }
-
-        [RelayCommand]
-        private async Task ImportHistoryAsync()
-        {
-            if (!GitHubService.IsConnected)
-            {
-                ClusterStatsSummary = "Connect at least one server first.";
-                return;
-            }
-            if (IsImportingHistory) return;
-
-            IsImportingHistory = true;
-            try
-            {
-                var before = _usageStats.GetEvents().Count;
-                await _usageStats
-                    .BackfillFromGitHubAsync(GitHubService, DateTime.UtcNow.AddDays(-180))
-                    .ConfigureAwait(true);
-                var after = _usageStats.GetEvents().Count;
-
-                RebuildAllCharts();
-
-                var added = after - before;
-                ChartSummary = added > 0
-                    ? $"📥 Imported {added} historical download(s) from GitHub."
-                    : "📥 No new historical downloads found.";
-            }
-            catch (Exception ex)
-            {
-                _logger.LogException(LogChannel.Settings, "History import failed", ex);
-                ChartSummary = $"Import error: {ex.Message}";
-            }
-            finally
-            {
-                IsImportingHistory = false;
             }
         }
 

@@ -174,11 +174,14 @@
                                         </StackPanel>
                                     </Border>
                                     <Border Background="#FF20202E" CornerRadius="6"
-                                            Padding="8,3" Margin="0,0,6,0"
+                                            Padding="8,2" Margin="0,0,6,0"
+                                            Height="22"
                                             VerticalAlignment="Center">
                                         <TextBlock Text="{Binding Tag}"
                                                Foreground="{StaticResource TextSecondary}"
                                                FontSize="10.5" FontWeight="SemiBold"
+                                               LineHeight="14" LineStackingStrategy="BlockLineHeight"
+                                               TextAlignment="Center"
                                                VerticalAlignment="Center"/>
                                     </Border>
                                     <Button Style="{StaticResource MaterialDesignIconButton}"
@@ -204,25 +207,11 @@
                 <StackPanel Orientation="Vertical"
                         HorizontalAlignment="Center"
                         VerticalAlignment="Center">
-                    <md:PackIcon Kind="Loading" Width="36" Height="36"
+                    <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
+                                 IsIndeterminate="True"
                                  Foreground="{StaticResource AccentCyanBrush}"
-                                 HorizontalAlignment="Center"
-                                 RenderTransformOrigin="0.5,0.5">
-                        <md:PackIcon.RenderTransform>
-                            <RotateTransform x:Name="FmSpinnerRotate"/>
-                        </md:PackIcon.RenderTransform>
-                        <md:PackIcon.Triggers>
-                            <EventTrigger RoutedEvent="FrameworkElement.Loaded">
-                                <BeginStoryboard>
-                                    <Storyboard RepeatBehavior="Forever">
-                                        <DoubleAnimation Storyboard.TargetName="FmSpinnerRotate"
-                                                         Storyboard.TargetProperty="Angle"
-                                                         From="0" To="360" Duration="0:0:1"/>
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </EventTrigger>
-                        </md:PackIcon.Triggers>
-                    </md:PackIcon>
+                                 Width="36" Height="36"
+                                 HorizontalAlignment="Center"/>
                     <TextBlock Text="{Binding BusyMessage}"
                            Foreground="{StaticResource TextPrimary}"
                            FontSize="13"

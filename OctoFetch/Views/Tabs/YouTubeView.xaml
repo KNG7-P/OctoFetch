@@ -121,29 +121,15 @@
                            VerticalAlignment="Center"/>
             </Grid>
 
-            <!-- Loading spinner -->
+            <!-- Loading spinner (Material indeterminate ring — GPU-cached, no Storyboards) -->
             <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Left"
                         Margin="0,0,0,4"
                         Visibility="{Binding IsSearching, Converter={StaticResource BoolToVisibility}}">
-                <md:PackIcon Kind="Loading" Width="16" Height="16"
+                <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
+                             IsIndeterminate="True"
                              Foreground="{StaticResource AccentCyanBrush}"
-                             VerticalAlignment="Center" Margin="0,0,6,0"
-                             RenderTransformOrigin="0.5,0.5">
-                    <md:PackIcon.RenderTransform>
-                        <RotateTransform x:Name="YtSpinnerRotate"/>
-                    </md:PackIcon.RenderTransform>
-                    <md:PackIcon.Triggers>
-                        <EventTrigger RoutedEvent="FrameworkElement.Loaded">
-                            <BeginStoryboard>
-                                <Storyboard RepeatBehavior="Forever">
-                                    <DoubleAnimation Storyboard.TargetName="YtSpinnerRotate"
-                                                     Storyboard.TargetProperty="Angle"
-                                                     From="0" To="360" Duration="0:0:1"/>
-                                </Storyboard>
-                            </BeginStoryboard>
-                        </EventTrigger>
-                    </md:PackIcon.Triggers>
-                </md:PackIcon>
+                             Width="16" Height="16"
+                             VerticalAlignment="Center" Margin="0,0,8,0"/>
                 <TextBlock Text="Searching…" Foreground="{StaticResource TextMuted}" FontSize="11.5"
                            VerticalAlignment="Center"/>
             </StackPanel>
@@ -153,9 +139,10 @@
                         Margin="0,0,0,4">
                 <TextBlock Text="Filter:" Foreground="{StaticResource TextMuted}" FontSize="11"
                            VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <ComboBox Width="90" Style="{StaticResource CompactComboBox}"
+                <ComboBox Width="100"
                           ItemsSource="{Binding VideoFilterOptions}"
-                          SelectedItem="{Binding VideoFilter}"/>
+                          SelectedItem="{Binding VideoFilter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                          FontSize="12"/>
             </StackPanel>
 
             <!-- Channel results (shown above videos when not in channel view) -->

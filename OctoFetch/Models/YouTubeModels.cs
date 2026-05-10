@@ -33,7 +33,8 @@ namespace OctoFetch.Models
             }
         }
 
-        public bool IsShort => DurationSeconds > 0 && DurationSeconds <= 60;
+        // YouTube classifies anything up to 3 minutes as a Short (180s as of 2024-10).
+        public bool IsShort => DurationSeconds > 0 && DurationSeconds <= 180;
         public string Url => $"https://www.youtube.com/watch?v={VideoId}";
     }
 
