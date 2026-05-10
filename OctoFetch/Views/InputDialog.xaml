@@ -16,7 +16,8 @@
             BorderBrush="{StaticResource BorderBrushDefault}" BorderThickness="1"
             Padding="22,18" MinWidth="420">
         <Border.Effect>
-            <DropShadowEffect Color="Black" BlurRadius="22" ShadowDepth="6" Opacity="0.55"/>
+            <DropShadowEffect Color="Black" BlurRadius="10" ShadowDepth="2" Opacity="0.40"
+                              RenderingBias="Performance"/>
         </Border.Effect>
         <StackPanel>
             <Grid Margin="0,0,0,12">

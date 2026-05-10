@@ -7,8 +7,7 @@
             <ResourceDictionary.MergedDictionaries>
                 <materialDesign:BundledTheme BaseTheme="Dark"
                                              PrimaryColor="Cyan"
-                                             SecondaryColor="DeepPurple"
-                                             ColorAdjustment="{materialDesign:ColorAdjustment}" />
+                                             SecondaryColor="DeepPurple" />
                 <ResourceDictionary Source="pack://application:,,,/MaterialDesignThemes.Wpf;component/Themes/MaterialDesign3.Defaults.xaml" />
                 <ResourceDictionary Source="/Resources/Brushes.xaml"/>
                 <ResourceDictionary Source="/Resources/Converters.xaml"/>

@@ -62,7 +62,7 @@
         <!-- Cluster summary line -->
         <md:Card Grid.Row="1" Background="{StaticResource BgCard}"
                  UniformCornerRadius="14" Padding="20,14" Margin="0,0,0,12"
-                 md:ElevationAssist.Elevation="Dp1">
+                 md:ElevationAssist.Elevation="Dp0">
             <TextBlock Text="{Binding ClusterStatsSummary}"
                        Foreground="{StaticResource TextSecondary}"
                        FontSize="13"/>
@@ -72,7 +72,7 @@
         <Grid Grid.Row="2" Margin="0,0,0,12">
             <md:Card Background="{StaticResource BgCard}"
                      UniformCornerRadius="14" Padding="18,14"
-                     md:ElevationAssist.Elevation="Dp1">
+                     md:ElevationAssist.Elevation="Dp0">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -290,7 +290,7 @@
                         <md:Card Background="{StaticResource BgCard}"
                                  UniformCornerRadius="12" Padding="16,12"
                                  Margin="0,0,0,8"
-                                 md:ElevationAssist.Elevation="Dp1">
+                                 md:ElevationAssist.Elevation="Dp0">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>

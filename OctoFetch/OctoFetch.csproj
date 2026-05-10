@@ -7,7 +7,7 @@
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<UseWPF>true</UseWPF>
-		<UseWindowsForms>false</UseWindowsForms>
+		<UseWindowsForms>true</UseWindowsForms>
 		<ApplicationIcon>icon.ico</ApplicationIcon>
 		<RootNamespace>OctoFetch</RootNamespace>
 		<AssemblyName>OctoFetch</AssemblyName>
@@ -33,6 +33,7 @@
 
 	<ItemGroup>
 		<EmbeddedResource Include="Resources\smart-downloader.yml" />
+		<EmbeddedResource Include="Resources\youtube_downloader.yml" />
 	</ItemGroup>
 
 	<ItemGroup>

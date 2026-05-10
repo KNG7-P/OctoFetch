@@ -24,6 +24,11 @@ namespace OctoFetch.Services
         private const string YamlVersionMarker = "# OctoFetch-YAML-Version:";
         private const int CurrentYamlVersion = 7;
 
+        private const string YouTubeWorkflowFileName = "youtube_downloader.yml";
+        private const string YouTubeWorkflowPath = ".github/workflows/" + YouTubeWorkflowFileName;
+        private const string YouTubeYamlVersionMarker = "# OctoFetch-YouTube-Version:";
+        private const int CurrentYouTubeYamlVersion = 1;
+
         private static readonly HashSet<string> InternalFileNames =
             new(StringComparer.OrdinalIgnoreCase) { "checksums.sha256", ".gitkeep" };
 
@@ -115,6 +120,7 @@ namespace OctoFetch.Services
                     node.DefaultBranch = string.IsNullOrEmpty(repo.DefaultBranch) ? "main" : repo.DefaultBranch;
 
                     await EnsureWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
+                    await EnsureYouTubeWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
 
                     node.IsConnected = true;
                     node.BadgeColor = "#10B981";
@@ -247,6 +253,81 @@ namespace OctoFetch.Services
             }
         }
 
+        // -------- YouTube workflow injection ---------------------------------
+        private static string LoadEmbeddedYouTubeWorkflowYaml()
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            var name = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith("youtube_downloader.yml", StringComparison.OrdinalIgnoreCase))
+                ?? throw new OctoFetchException("Embedded YouTube workflow YAML not found.");
+            using var stream = asm.GetManifestResourceStream(name)
+                ?? throw new OctoFetchException("Could not open embedded YouTube workflow YAML stream.");
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            return reader.ReadToEnd();
+        }
+
+        private static int? ExtractYouTubeYamlVersion(string content)
+        {
+            if (string.IsNullOrEmpty(content)) return null;
+            var match = Regex.Match(content, $@"{Regex.Escape(YouTubeYamlVersionMarker)}\s*(\d+)");
+            return match.Success && int.TryParse(match.Groups[1].Value, out var v) ? v : null;
+        }
+
+        private async Task EnsureYouTubeWorkflowAsync(CloudNode node, CancellationToken cancellationToken)
+        {
+            if (node.Client == null || node.Username == null) return;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var yaml = LoadEmbeddedYouTubeWorkflowYaml();
+
+            try
+            {
+                var existing = await node.Client.Repository.Content
+                    .GetAllContents(node.Username, node.RepoName, YouTubeWorkflowPath)
+                    .ConfigureAwait(false);
+
+                var current = existing?.FirstOrDefault();
+                if (current == null)
+                {
+                    await CreateYouTubeWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+
+                var existingYaml = current.Content ?? string.Empty;
+                var existingVersion = ExtractYouTubeYamlVersion(existingYaml);
+                if (existingVersion is null || existingVersion < CurrentYouTubeYamlVersion)
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"\ud83d\udd01 Updating YouTube workflow on [{node.RepoName}] (v{existingVersion?.ToString() ?? "?"} \u2192 v{CurrentYouTubeYamlVersion})...");
+                    await node.Client.Repository.Content.UpdateFile(
+                        node.Username, node.RepoName, YouTubeWorkflowPath,
+                        new UpdateFileRequest($"chore: upgrade YouTube workflow to v{CurrentYouTubeYamlVersion}", yaml, current.Sha, node.DefaultBranch)
+                    ).ConfigureAwait(false);
+                }
+            }
+            catch (NotFoundException)
+            {
+                await CreateYouTubeWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private async Task CreateYouTubeWorkflowAsync(CloudNode node, string yaml, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                _logger.Log(LogChannel.Settings, $"\ud83d\udee0\ufe0f Injecting YouTube workflow into [{node.RepoName}]...");
+                await node.Client!.Repository.Content.CreateFile(
+                    node.Username!, node.RepoName, YouTubeWorkflowPath,
+                    new CreateFileRequest("chore: init YouTube workflow", yaml, node.DefaultBranch)
+                ).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogException(LogChannel.Settings, $"Failed to inject YouTube workflow on [{node.RepoName}]", ex);
+            }
+        }
+
         // -------- Round-robin -----------------------------------------------
         private CloudNode GetNextAvailableNode()
         {
@@ -273,7 +354,7 @@ namespace OctoFetch.Services
 
         private static readonly HashSet<string> KnownTags =
             new(StringComparer.OrdinalIgnoreCase)
-            { "Movies", "Software", "Games", "Music", "Books", "Documents", "Other" };
+            { "Movies", "Software", "Games", "Music", "Books", "Documents", "YouTube", "Other" };
 
         public static (string Tag, string DisplayName) ParseFolderTag(string folderName)
         {
@@ -353,7 +434,7 @@ namespace OctoFetch.Services
                 ["chunk_size"] = _chunkSizeProvider(),
             };
 
-            var dispatchTime = DateTimeOffset.UtcNow.AddSeconds(-2);
+            var dispatchTime = DateTimeOffset.UtcNow.AddSeconds(-60);
 
             try
             {
@@ -376,14 +457,174 @@ namespace OctoFetch.Services
             }
         }
 
+        public async Task TriggerYouTubeLeechAsync(
+            string videoUrl,
+            string videoTitle,
+            string format,
+            string quality,
+            bool isSafe,
+            bool isObfuscated,
+            string? tag,
+            Action<string, string> onLinkFetched,
+            Action<CloudNode, long>? onRunResolved = null,
+            Action<int, string>? onProgress = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(videoUrl))
+                throw new ArgumentException("Video URL must not be empty.", nameof(videoUrl));
+
+            var node = GetNextAvailableNode();
+            if (node.Client == null || node.Username == null)
+                throw new NodeConnectionException(node.RepoName, "Client not initialized.");
+
+            var folderName = BuildFolderName(videoUrl, isSafe, isObfuscated, tag ?? "YouTube");
+            _logger.Log(LogChannel.Downloader, $"🎬 [{node.RepoName}] YouTube download started. Folder: {folderName}");
+
+            var inputs = new Dictionary<string, object>
+            {
+                ["video_url"] = videoUrl,
+                ["folder_name"] = folderName,
+                ["output_format"] = format,
+                ["desired_quality"] = quality,
+                ["chunk_size"] = _chunkSizeProvider(),
+            };
+
+            var dispatchTime = DateTimeOffset.UtcNow.AddSeconds(-60);
+
+            try
+            {
+                await node.Client.Actions.Workflows.CreateDispatch(
+                    node.Username, node.RepoName, YouTubeWorkflowFileName,
+                    new CreateWorkflowDispatch(node.DefaultBranch) { Inputs = inputs }
+                ).ConfigureAwait(false);
+
+                _logger.Log(LogChannel.Downloader, $"⏳ YouTube trigger sent for: {videoTitle}. Locating workflow run...");
+                await MonitorYouTubeAndFetchAsync(node, folderName, dispatchTime, onLinkFetched, onRunResolved, onProgress, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.Log(LogChannel.Downloader, "🛑 YouTube download cancelled by user.");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new WorkflowDispatchException($"YouTube trigger failed on [{node.RepoName}]: {ex.Message}", ex);
+            }
+        }
+
+        private async Task MonitorYouTubeAndFetchAsync(
+            CloudNode node,
+            string targetFolder,
+            DateTimeOffset dispatchTime,
+            Action<string, string> onLinkFetched,
+            Action<CloudNode, long>? onRunResolved,
+            Action<int, string>? onProgress,
+            CancellationToken cancellationToken)
+        {
+            try { onProgress?.Invoke(0, "Initializing…"); }
+            catch { }
+
+            var run = await ResolveDispatchedRunAsync(node, targetFolder, dispatchTime, onProgress, cancellationToken, YouTubeWorkflowFileName).ConfigureAwait(false);
+            if (run == null)
+            {
+                _logger.Log(LogChannel.Downloader, "❌ Could not locate the YouTube workflow run. Check GitHub UI.");
+                onProgress?.Invoke(0, "Run not found");
+                return;
+            }
+
+            try { onRunResolved?.Invoke(node, run.Id); }
+            catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "onRunResolved callback failed", ex); }
+
+            var pollInterval = Math.Max(2, _pollIntervalSecondsProvider());
+            var maxAttempts = Math.Max(1, _pollMaxAttemptsProvider());
+
+            int lastKnownPercent = 0;
+            string lastKnownLabel = "Queued";
+            int consecutiveErrors = 0;
+            const int errorLogThreshold = 3;
+
+            for (var attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var current = await node.Client!.Actions.Workflows.Runs
+                        .Get(node.Username!, node.RepoName, run.Id)
+                        .ConfigureAwait(false);
+
+                    var (percent, label) = await ComputeRealProgressAsync(node, run.Id, current, cancellationToken).ConfigureAwait(false);
+                    if (percent.HasValue)
+                    {
+                        lastKnownPercent = percent.Value;
+                        lastKnownLabel = label;
+                    }
+
+                    try { onProgress?.Invoke(lastKnownPercent, lastKnownLabel); }
+                    catch (Exception cb) { _logger.LogException(LogChannel.Downloader, "onProgress callback failed", cb); }
+
+                    consecutiveErrors = 0;
+
+                    if (current.Status == WorkflowRunStatus.Completed)
+                    {
+                        if (current.Conclusion == WorkflowRunConclusion.Success)
+                        {
+                            _logger.Log(LogChannel.Downloader, "✅ YouTube download completed! Fetching links...");
+                            try { onProgress?.Invoke(100, "Completed"); } catch { }
+                            await FetchLinksFromFolderAsync(node, targetFolder, onLinkFetched, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            _logger.Log(LogChannel.Downloader,
+                                $"❌ YouTube workflow finished with conclusion: {current.Conclusion}.");
+                            try { onProgress?.Invoke(lastKnownPercent, $"Failed: {current.Conclusion}"); } catch { }
+                        }
+                        return;
+                    }
+
+                    _logger.Log(LogChannel.Downloader,
+                        current.Status == WorkflowRunStatus.Queued
+                            ? $"⏳ [{node.RepoName}] YouTube: waiting for a runner..."
+                            : current.Status == WorkflowRunStatus.InProgress
+                                ? $"🎬 [{node.RepoName}] YouTube ({lastKnownPercent}%): {lastKnownLabel}"
+                                : $"🔄 [{node.RepoName}] Status: {current.Status}");
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    consecutiveErrors++;
+                    try { onProgress?.Invoke(lastKnownPercent, lastKnownLabel); }
+                    catch { }
+
+                    if (consecutiveErrors >= errorLogThreshold)
+                    {
+                        _logger.LogException(LogChannel.Downloader,
+                            $"Network error while polling YouTube run ({consecutiveErrors} consecutive)", ex);
+                        if (consecutiveErrors % 5 == 0) consecutiveErrors = errorLogThreshold;
+                    }
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(pollInterval), cancellationToken).ConfigureAwait(false);
+            }
+
+            _logger.Log(LogChannel.Downloader,
+                "❌ YouTube monitor timeout. The GitHub queue is taking too long; check GitHub directly.");
+        }
+
         private async Task<WorkflowRun?> ResolveDispatchedRunAsync(
             CloudNode node,
             string folderName,
             DateTimeOffset dispatchTime,
             Action<int, string>? onProgress,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? workflowFile = null)
         {
-            const int maxAttempts = 12;
+            var wfFile = workflowFile ?? WorkflowFileName;
+            const int maxAttempts = 30;
+            const int initialDelayMs = 3000;
+            const int regularDelayMs = 3000;
+
             for (var i = 0; i < maxAttempts; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -391,23 +632,47 @@ namespace OctoFetch.Services
                 try { onProgress?.Invoke(0, $"Locating workflow run… ({i + 1}/{maxAttempts})"); }
                 catch { }
 
-                await Task.Delay(2500, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(i == 0 ? initialDelayMs : regularDelayMs, cancellationToken).ConfigureAwait(false);
 
-                var runs = await node.Client!.Actions.Workflows.Runs
-                    .ListByWorkflow(node.Username!, node.RepoName, WorkflowFileName,
-                        new WorkflowRunsRequest { Event = "workflow_dispatch", Branch = node.DefaultBranch })
-                    .ConfigureAwait(false);
+                try
+                {
+                    var runs = await node.Client!.Actions.Workflows.Runs
+                        .ListByWorkflow(node.Username!, node.RepoName, wfFile,
+                            new WorkflowRunsRequest { Event = "workflow_dispatch", Branch = node.DefaultBranch })
+                        .ConfigureAwait(false);
 
-                var candidate = runs.WorkflowRuns
-                    .Where(r => r.CreatedAt >= dispatchTime)
-                    .OrderByDescending(r => r.CreatedAt)
-                    .FirstOrDefault();
+                    var candidate = runs.WorkflowRuns
+                        .Where(r => r.CreatedAt >= dispatchTime)
+                        .OrderByDescending(r => r.CreatedAt)
+                        .FirstOrDefault();
 
-                if (candidate != null)
+                    if (candidate != null)
+                    {
+                        _logger.Log(LogChannel.Downloader,
+                            $"📌 Tracking workflow run #{candidate.Id} for folder '{folderName}'.");
+                        return candidate;
+                    }
+
+                    if (i >= 10 && runs.WorkflowRuns.Count > 0)
+                    {
+                        var fallback = runs.WorkflowRuns
+                            .Where(r => r.Status != WorkflowRunStatus.Completed)
+                            .OrderByDescending(r => r.CreatedAt)
+                            .FirstOrDefault();
+
+                        if (fallback != null)
+                        {
+                            _logger.Log(LogChannel.Downloader,
+                                $"📌 Fallback: tracking most recent active run #{fallback.Id} for folder '{folderName}'.");
+                            return fallback;
+                        }
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
                 {
                     _logger.Log(LogChannel.Downloader,
-                        $"📌 Tracking workflow run #{candidate.Id} for folder '{folderName}'.");
-                    return candidate;
+                        $"⚠️ Run lookup attempt {i + 1} failed: {ex.GetType().Name}: {ex.Message}");
                 }
             }
 

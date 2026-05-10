@@ -6,5 +6,6 @@
     <conv:StringToBrushConverter    x:Key="StringToBrush"/>
     <conv:InverseBoolConverter      x:Key="InverseBool"/>
     <conv:BytesToHumanConverter     x:Key="BytesToHuman"/>
+    <conv:CachedImageConverter      x:Key="CachedImage"/>
 
 </ResourceDictionary>

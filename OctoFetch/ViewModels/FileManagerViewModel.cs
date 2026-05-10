@@ -17,6 +17,7 @@ namespace OctoFetch.ViewModels
     {
         private readonly IGitHubService _gitHubService;
         private readonly IAppLogger _logger;
+        private readonly AppSettings _settings;
 
         private List<RemoteFile> _allFiles = new();
 
@@ -40,12 +41,16 @@ namespace OctoFetch.ViewModels
 
         public Func<string, string?>? PromptForNewFolderName { get; set; }
 
+        public Action<CloudItem>? RequestDownloadFolder { get; set; }
+
         public FileManagerViewModel(
             IGitHubService gitHubService,
-            IAppLogger logger)
+            IAppLogger logger,
+            AppSettings settings)
         {
             _gitHubService = gitHubService;
             _logger = logger;
+            _settings = settings;
 
             FilteredItems = CollectionViewSource.GetDefaultView(Items);
             FilteredItems.Filter = MatchesFilter;
@@ -130,6 +135,7 @@ namespace OctoFetch.ViewModels
                     .Select(g =>
                     {
                         var (tag, displayName) = GitHubService.ParseFolderTag(g.Key);
+                        _settings.FolderUploadTimes.TryGetValue(g.Key, out var uploadTime);
                         return new CloudItem
                         {
                             Name = displayName,
@@ -138,6 +144,8 @@ namespace OctoFetch.ViewModels
                             Tag = tag,
                             Files = g.OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList(),
                             NodeCount = g.Select(f => f.OwnerNode).Distinct().Count(),
+                            UploadedAt = uploadTime == default ? null : uploadTime,
+                            IsNew = string.Equals(g.Key, _settings.LastUploadedFolder, StringComparison.Ordinal),
                         };
                     })
                     .OrderBy(i => i.Tag, StringComparer.OrdinalIgnoreCase)
@@ -275,6 +283,13 @@ namespace OctoFetch.ViewModels
                 BusyMessage = string.Empty;
                 IsRefreshing = false;
             }
+        }
+
+        [RelayCommand]
+        private void DownloadFolder(CloudItem? item)
+        {
+            if (item == null || !item.IsFolder) return;
+            RequestDownloadFolder?.Invoke(item);
         }
 
         // -- Rename folder ---------------------------------------------------

@@ -23,11 +23,12 @@ namespace OctoFetch.ViewModels
 
         private readonly List<(string FileName, string Url)> _runLinks = new();
 
-        public event Action? DownloadCompleted;
+        public event Action<string?>? DownloadCompleted;
 
         private CancellationTokenSource? _activeCts;
         private CloudNode? _activeNode;
         private long? _activeRunId;
+        private string? _lastDispatchedFolder;
 
         // Single URL.
         [ObservableProperty] private string _targetUrl = string.Empty;
@@ -52,6 +53,8 @@ namespace OctoFetch.ViewModels
         [ObservableProperty] private bool _isQueueVisible;
 
         private bool _bulkCancelled;
+        private DateTime _lastProgressUpdate = DateTime.MinValue;
+
         public ObservableCollection<string> AvailableTags { get; } = new()
         {
             "Other", "Movies", "Software", "Games", "Music", "Books", "Documents",
@@ -193,6 +196,7 @@ namespace OctoFetch.ViewModels
             _activeCts = new CancellationTokenSource();
             _activeNode = null;
             _activeRunId = null;
+            _lastDispatchedFolder = null;
             _runLinks.Clear();
             IsLeechRunning = true;
             ProgressValue = 0;
@@ -215,7 +219,7 @@ namespace OctoFetch.ViewModels
                 _toastService.ShowSuccess("Download finished",
                     $"{Truncate(url, 80)} — links ready in Dashboard.");
                 FlushRunLinksToUsageStats(url);
-                DownloadCompleted?.Invoke();
+                DownloadCompleted?.Invoke(_lastDispatchedFolder);
             }
             catch (OperationCanceledException)
             {
@@ -253,6 +257,12 @@ namespace OctoFetch.ViewModels
 
         private void OnProgress(int percent, string label)
         {
+            var now = DateTime.UtcNow;
+            if ((now - _lastProgressUpdate).TotalMilliseconds < 250
+                && percent != 0 && percent != 100)
+                return;
+
+            _lastProgressUpdate = now;
             ProgressValue = percent;
             ProgressLabel = label;
         }
@@ -293,11 +303,19 @@ namespace OctoFetch.ViewModels
             if (!_runLinks.Any(l => string.Equals(l.Url, url, StringComparison.Ordinal)))
                 _runLinks.Add((fileName, url));
 
-            Application.Current?.Dispatcher.Invoke(() =>
+            if (_lastDispatchedFolder == null && url.Contains("/downloads/"))
+            {
+                var idx = url.IndexOf("/downloads/", StringComparison.Ordinal);
+                var afterDownloads = url.Substring(idx + "/downloads/".Length);
+                var slash = afterDownloads.IndexOf('/');
+                if (slash > 0) _lastDispatchedFolder = afterDownloads.Substring(0, slash);
+            }
+
+            Application.Current?.Dispatcher.BeginInvoke((Action)(() =>
             {
                 if (!Links.Any(l => l.Url == url))
                     Links.Add(new LinkItem { FileName = fileName, Url = url });
-            });
+            }));
         }
 
         private void FlushRunLinksToUsageStats(string sourceUrl)
@@ -351,5 +369,67 @@ namespace OctoFetch.ViewModels
 
         [RelayCommand]
         private void ToggleBulkMode() => IsBulkMode = !IsBulkMode;
+
+        // ---- YouTube download (reuses the same progress/link infrastructure) ---
+        public async Task RunYouTubeDownloadAsync(string videoUrl, string videoTitle, string format, string quality)
+        {
+            if (IsLeechRunning) return;
+
+            _activeCts = new CancellationTokenSource();
+            _activeNode = null;
+            _activeRunId = null;
+            _runLinks.Clear();
+            IsLeechRunning = true;
+            ProgressValue = 0;
+            ProgressLabel = "Queued";
+            IsProgressVisible = true;
+            await Task.Yield();
+
+            try
+            {
+                await _gitHubService.TriggerYouTubeLeechAsync(
+                    videoUrl,
+                    videoTitle,
+                    format,
+                    quality,
+                    IsSafeNameActive,
+                    IsObfuscateNameActive,
+                    "YouTube",
+                    OnLinkFetched,
+                    OnRunResolved,
+                    OnProgress,
+                    _activeCts.Token).ConfigureAwait(true);
+
+                _toastService.ShowSuccess("YouTube download finished",
+                    $"{Truncate(videoTitle, 80)} — links ready in Dashboard.");
+                FlushRunLinksToUsageStats(videoUrl);
+                DownloadCompleted?.Invoke(_lastDispatchedFolder);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.Log(LogChannel.Downloader, "🛑 YouTube download cancelled.");
+            }
+            catch (NoNodesAvailableException ex)
+            {
+                _logger.LogException(LogChannel.Downloader, "Cannot dispatch YouTube download", ex);
+                _toastService.ShowFailure("YouTube download failed", ex.Message);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogException(LogChannel.Downloader, "YouTube download error", ex);
+                _toastService.ShowFailure("YouTube download failed", ex.Message);
+            }
+            finally
+            {
+                IsLeechRunning = false;
+                IsProgressVisible = false;
+                _activeCts?.Dispose();
+                _activeCts = null;
+                _activeNode = null;
+                _activeRunId = null;
+                StartLeechCommand.NotifyCanExecuteChanged();
+                CancelLeechCommand.NotifyCanExecuteChanged();
+            }
+        }
     }
 }

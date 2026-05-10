@@ -39,7 +39,7 @@
         <!-- Toolbar -->
         <md:Card Grid.Row="1" Background="{StaticResource BgCard}"
                  UniformCornerRadius="12" Padding="14,10" Margin="0,0,0,10"
-                 md:ElevationAssist.Elevation="Dp1">
+                 md:ElevationAssist.Elevation="Dp0">
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
@@ -79,13 +79,16 @@
         <Grid Grid.Row="2">
             <md:Card Background="{StaticResource BgCard}"
                  UniformCornerRadius="14" Padding="6"
-                 md:ElevationAssist.Elevation="Dp1">
+                 md:ElevationAssist.Elevation="Dp0">
                 <ListView x:Name="ListViewFilesGithub"
                       Background="Transparent"
                       BorderThickness="0"
                       ItemsSource="{Binding FilteredItems}"
                       MouseDoubleClick="ListViewFiles_MouseDoubleClick"
-                      SelectionMode="Extended">
+                      SelectionMode="Extended"
+                      VirtualizingPanel.IsVirtualizing="True"
+                      VirtualizingPanel.VirtualizationMode="Recycling"
+                      ScrollViewer.IsDeferredScrollingEnabled="True">
                     <ListView.ItemContainerStyle>
                         <Style TargetType="ListViewItem">
                             <Setter Property="Background" Value="Transparent"/>
@@ -157,13 +160,34 @@
                                            Foreground="{StaticResource TextMuted}"
                                            FontSize="11" Margin="0,1,0,0"/>
                                 </StackPanel>
-                                <Border Grid.Column="2"
-                                    Background="#FF20202E" CornerRadius="6"
-                                    Padding="8,3" VerticalAlignment="Center">
-                                    <TextBlock Text="{Binding Tag}"
-                                           Foreground="{StaticResource TextSecondary}"
-                                           FontSize="10.5" FontWeight="SemiBold"/>
-                                </Border>
+                                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Border Background="#FF352D00" CornerRadius="6"
+                                            Padding="6,3" Margin="0,0,6,0"
+                                            Visibility="{Binding IsNew, Converter={StaticResource BoolToVisibility}}">
+                                        <StackPanel Orientation="Horizontal">
+                                            <md:PackIcon Kind="StarFourPoints" Width="11" Height="11"
+                                                         Foreground="#FFFBBF24" VerticalAlignment="Center"
+                                                         Margin="0,0,4,0"/>
+                                            <TextBlock Text="NEW" Foreground="#FFFBBF24"
+                                                       FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Background="#FF20202E" CornerRadius="6"
+                                            Padding="8,3" Margin="0,0,6,0">
+                                        <TextBlock Text="{Binding Tag}"
+                                               Foreground="{StaticResource TextSecondary}"
+                                               FontSize="10.5" FontWeight="SemiBold"/>
+                                    </Border>
+                                    <Button Style="{StaticResource MaterialDesignIconButton}"
+                                            Width="30" Height="30"
+                                            ToolTip="Download folder"
+                                            Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisibility}}"
+                                            Command="{Binding DataContext.DownloadFolderCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                            CommandParameter="{Binding}">
+                                        <md:PackIcon Kind="Download" Width="16" Height="16"
+                                                     Foreground="{StaticResource AccentCyanBrush}"/>
+                                    </Button>
+                                </StackPanel>
                             </Grid>
                         </DataTemplate>
                     </ListView.ItemTemplate>

@@ -44,6 +44,19 @@ namespace OctoFetch.Services
             Action<int, string>? onProgress = null,
             CancellationToken cancellationToken = default);
 
+        Task TriggerYouTubeLeechAsync(
+            string videoUrl,
+            string videoTitle,
+            string format,
+            string quality,
+            bool isSafe,
+            bool isObfuscated,
+            string? tag,
+            Action<string, string> onLinkFetched,
+            Action<CloudNode, long>? onRunResolved = null,
+            Action<int, string>? onProgress = null,
+            CancellationToken cancellationToken = default);
+
         Task CancelDispatchedRunAsync(CloudNode node, long runId, CancellationToken cancellationToken = default);
         Task<IReadOnlyList<RemoteFile>> GetAllCloudFilesAggregatedAsync(CancellationToken cancellationToken = default);
         Task DeleteFilesAsync(IReadOnlyList<RemoteFile> files, CancellationToken cancellationToken = default);

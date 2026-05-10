@@ -1,7 +1,8 @@
-using System;
+ï»¿using System;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -21,6 +22,9 @@ namespace OctoFetch
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            // Prefer hardware (GPU) rendering â€” Tier 2 means full HW acceleration
+            RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.Default;
+
             DispatcherUnhandledException += OnDispatcherUnhandledException;
             AppDomain.CurrentDomain.UnhandledException += OnAppDomainUnhandledException;
             TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
@@ -46,7 +50,7 @@ namespace OctoFetch
                     "OctoFetch could not start.\n\n" +
                     $"{ex.GetType().Name}: {ex.Message}\n\n" +
                     $"Details written to:\n{CrashLogPath}",
-                    "OctoFetch — Startup error",
+                    "OctoFetch ï¿½ Startup error",
                     MessageBoxButton.OK, MessageBoxImage.Error);
                 Shutdown(-1);
             }
@@ -68,6 +72,12 @@ namespace OctoFetch
 
             services.AddSingleton<IToastService, ToastService>();
 
+            services.AddSingleton<IYouTubeSearchService>(sp =>
+            {
+                var settings = sp.GetRequiredService<AppSettings>();
+                return new YouTubeSearchService(() => settings.YouTubeApiKey);
+            });
+
             services.AddSingleton<IGitHubService>(sp =>
             {
                 var logger = sp.GetRequiredService<IAppLogger>();
@@ -77,7 +87,7 @@ namespace OctoFetch
                     () => settings.AllowInsecureSsl,
                     () => settings.PollIntervalSeconds,
                     () => settings.PollMaxAttempts,
-                    () => string.IsNullOrWhiteSpace(settings.ChunkSize) ? "90M" : settings.ChunkSize);
+                    () => string.IsNullOrWhiteSpace(settings.ChunkSize) ? "45M" : settings.ChunkSize);
             });
 
             services.AddSingleton<MainViewModel>();
@@ -91,7 +101,7 @@ namespace OctoFetch
                 $"An unexpected error occurred:\n\n" +
                 $"{e.Exception.GetType().Name}: {e.Exception.Message}\n\n" +
                 $"OctoFetch will keep running. Details saved to:\n{CrashLogPath}",
-                "OctoFetch — Unexpected error",
+                "OctoFetch ï¿½ Unexpected error",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             e.Handled = true;
         }

@@ -24,6 +24,8 @@ namespace OctoFetch.ViewModels
         public NodeManagementViewModel NodeManagement { get; }
         public FileManagerViewModel FileManager { get; }
         public ExtractorViewModel Extractor { get; }
+        public YouTubeViewModel YouTube { get; }
+        public DownloaderViewModel Downloader { get; }
 
         // Cross-cutting log collections
         public ObservableCollection<LogEntry> DownloaderLogs { get; } = new();
@@ -58,6 +60,8 @@ namespace OctoFetch.ViewModels
         [ObservableProperty] private bool _isExtractorActive;
         [ObservableProperty] private bool _isStatsActive;
         [ObservableProperty] private bool _isSettingsActive;
+        [ObservableProperty] private bool _isYouTubeActive;
+        [ObservableProperty] private bool _isDownloaderActive;
 
         public MainViewModel(
             IAppLogger logger,
@@ -66,6 +70,7 @@ namespace OctoFetch.ViewModels
             IExtractorService extractorService,
             IToastService toastService,
             IUsageStatsService usageStats,
+            IYouTubeSearchService youTubeSearchService,
             AppSettings settings)
         {
             _logger = logger;
@@ -83,8 +88,24 @@ namespace OctoFetch.ViewModels
                 FileManager.InvalidateCache();
                 InvalidateStatsCache();
             });
-            FileManager = new FileManagerViewModel(gitHubService, logger);
+            FileManager = new FileManagerViewModel(gitHubService, logger, settings);
             Extractor = new ExtractorViewModel(extractorService, logger);
+            YouTube = new YouTubeViewModel(youTubeSearchService, gitHubService, logger, toastService, () => SaveSettingsSilently());
+            Downloader = new DownloaderViewModel(logger, settings, gitHubService);
+
+            YouTube.RequestDownload = (videoUrl, videoTitle, format, quality) =>
+            {
+                DeactivateAllTabs();
+                IsDashboardActive = true;
+                _ = Dashboard.RunYouTubeDownloadAsync(videoUrl, videoTitle, format, quality);
+            };
+
+            FileManager.RequestDownloadFolder = (item) =>
+            {
+                Downloader.EnqueueFolder(item);
+                DeactivateAllTabs();
+                IsDownloaderActive = true;
+            };
 
             NodeManagement.PropertyChanged += (_, e) =>
             {
@@ -92,8 +113,14 @@ namespace OctoFetch.ViewModels
                     QuickConnectCommand.NotifyCanExecuteChanged();
             };
 
-            Dashboard.DownloadCompleted += () =>
+            Dashboard.DownloadCompleted += (folderName) =>
             {
+                if (!string.IsNullOrEmpty(folderName))
+                {
+                    Settings.FolderUploadTimes[folderName] = DateTime.UtcNow;
+                    Settings.LastUploadedFolder = folderName;
+                    SaveSettingsSilently();
+                }
                 FileManager.InvalidateCache();
                 InvalidateStatsCache();
             };
@@ -112,24 +139,38 @@ namespace OctoFetch.ViewModels
             RebuildAllCharts();
         }
 
+        private const int MaxLogEntries = 200;
+
+        private static void TrimCollection(ObservableCollection<LogEntry> col)
+        {
+            while (col.Count > MaxLogEntries)
+                col.RemoveAt(0);
+        }
+
         private void OnLogReceived(LogChannel channel, string message)
         {
-            Application.Current?.Dispatcher.Invoke(() =>
+            Application.Current?.Dispatcher.BeginInvoke((Action)(() =>
             {
                 switch (channel)
                 {
                     case LogChannel.Downloader:
                         DownloaderLogs.Add(new LogEntry { Message = $"[{DateTime.Now:HH:mm:ss}] {message}", Color = ColorFor(message) });
+                        TrimCollection(DownloaderLogs);
                         break;
                     case LogChannel.Settings:
                         SettingsLogs.Add(new LogEntry { Message = $"[{DateTime.Now:HH:mm}] {message}", Color = ColorFor(message) });
+                        TrimCollection(SettingsLogs);
                         break;
                     case LogChannel.Extractor:
                         if (string.IsNullOrEmpty(message)) ExtractorLogs.Clear();
-                        else ExtractorLogs.Add(new LogEntry { Message = message, Color = ColorFor(message) });
+                        else
+                        {
+                            ExtractorLogs.Add(new LogEntry { Message = message, Color = ColorFor(message) });
+                            TrimCollection(ExtractorLogs);
+                        }
                         break;
                 }
-            });
+            }));
         }
 
         private static string ColorFor(string m)
@@ -310,7 +351,7 @@ namespace OctoFetch.ViewModels
         private void DeactivateAllTabs()
         {
             IsDashboardActive = IsFileManagerActive = IsExtractorActive =
-                IsStatsActive = IsSettingsActive = false;
+                IsStatsActive = IsSettingsActive = IsYouTubeActive = IsDownloaderActive = false;
         }
 
         [RelayCommand]
@@ -346,6 +387,20 @@ namespace OctoFetch.ViewModels
         }
 
         public void InvalidateStatsCache() => _statsLoadedOnce = false;
+
+        [RelayCommand]
+        private void NavigateYouTube()
+        {
+            DeactivateAllTabs();
+            IsYouTubeActive = true;
+        }
+
+        [RelayCommand]
+        private void NavigateDownloader()
+        {
+            DeactivateAllTabs();
+            IsDownloaderActive = true;
+        }
 
         [RelayCommand]
         private void NavigateSettings()

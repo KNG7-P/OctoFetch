@@ -10,7 +10,8 @@
 
     <!-- ============================ Sidebar ============================ -->
     <Border Background="{StaticResource BgSidebar}"
-            CornerRadius="15,0,0,15" Padding="18,22">
+            CornerRadius="15,0,0,15" Padding="18,22"
+            md:TransitionAssist.DisableTransitions="True">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
@@ -66,6 +67,25 @@
                     </StackPanel>
                 </RadioButton>
 
+                <RadioButton Style="{StaticResource NavRailButton}"
+                             IsChecked="{Binding IsYouTubeActive, Mode=TwoWay}"
+                             Command="{Binding NavigateYouTubeCommand}">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="Youtube" Width="18" Height="18"
+                                     Margin="0,0,12,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="YouTube" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+                <RadioButton Style="{StaticResource NavRailButton}"
+                             IsChecked="{Binding IsDownloaderActive, Mode=TwoWay}"
+                             Command="{Binding NavigateDownloaderCommand}">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="DownloadCircleOutline" Width="18" Height="18"
+                                     Margin="0,0,12,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="Downloads" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+
                 <Border Background="{StaticResource BorderBrushDefault}" Height="1" Margin="0,16,0,12"/>
 
                 <RadioButton Style="{StaticResource NavRailButton}"
@@ -81,9 +101,9 @@
                              IsChecked="{Binding IsSettingsActive, Mode=TwoWay}"
                              Command="{Binding NavigateSettingsCommand}">
                     <StackPanel Orientation="Horizontal">
-                        <md:PackIcon Kind="ServerNetwork" Width="18" Height="18"
+                        <md:PackIcon Kind="CogOutline" Width="18" Height="18"
                                      Margin="0,0,12,0" VerticalAlignment="Center"/>
-                        <TextBlock Text="Servers" VerticalAlignment="Center"/>
+                        <TextBlock Text="Settings" VerticalAlignment="Center"/>
                     </StackPanel>
                 </RadioButton>
             </StackPanel>
@@ -93,18 +113,13 @@
                 <md:Card Background="{StaticResource BgCard}"
                          UniformCornerRadius="11"
                          Padding="14,12" Margin="0,0,0,10"
-                         md:ElevationAssist.Elevation="Dp1">
+                         md:ElevationAssist.Elevation="Dp0">
                     <StackPanel>
                         <TextBlock Text="STATUS" Style="{StaticResource SectionLabel}"/>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                             <Ellipse Width="9" Height="9"
                                      Fill="{Binding SidebarStatusColor, Converter={StaticResource StringToBrush}}"
-                                     VerticalAlignment="Center" Margin="0,0,8,0">
-                                <Ellipse.Effect>
-                                    <DropShadowEffect ShadowDepth="0" BlurRadius="8"
-                                                      Color="#80FFFFFF" Opacity="0.4"/>
-                                </Ellipse.Effect>
-                            </Ellipse>
+                                     VerticalAlignment="Center" Margin="0,0,8,0"/>
                             <TextBlock Text="{Binding SidebarStatusText}"
                                        Foreground="{Binding SidebarStatusColor, Converter={StaticResource StringToBrush}}"
                                        FontSize="13" FontWeight="SemiBold"/>

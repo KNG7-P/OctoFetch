@@ -1,4 +1,4 @@
-﻿# OctoFetch-YAML-Version: 2
+﻿# OctoFetch-YAML-Version: 7
 
 name: 'Cloud Leecher Engine'
  
@@ -20,7 +20,7 @@ on:
       chunk_size:
         required: false
         type: string
-        default: "90M"
+        default: "45M"
  
 permissions:
   contents: write

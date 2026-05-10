@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Input;
 using OctoFetch.ViewModels;
 
@@ -19,6 +19,13 @@ namespace OctoFetch
             vm.NodeManagement.NewTokenProvider = () => SettingsHost.GetNewToken();
             vm.NodeManagement.ClearNewTokenInput = () => SettingsHost.ClearNewToken();
             vm.FileManager.SelectedItemsProvider = () => FileManagerHost.GetSelectedItems();
+            vm.YouTube.ShowDownloadDialog = (title) =>
+            {
+                var dlg = new Views.Dialogs.YouTubeDownloadDialog(title)
+                    { Owner = this };
+                return dlg.ShowDialog() == true ? dlg.Result : null;
+            };
+
             vm.FileManager.PromptForNewFolderName = currentName =>
             {
                 var dlg = new Views.InputDialog(
@@ -64,6 +71,8 @@ namespace OctoFetch
                 vm.IsExtractorActive = false;
                 vm.IsStatsActive = false;
                 vm.IsSettingsActive = false;
+                vm.IsYouTubeActive = false;
+                vm.IsDownloaderActive = false;
             }
         }
 
