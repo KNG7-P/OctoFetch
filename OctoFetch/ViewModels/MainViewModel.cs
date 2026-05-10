@@ -140,6 +140,17 @@ namespace OctoFetch.ViewModels
 
         private const int MaxLogEntries = 200;
 
+        // ----- Batched log delivery -----
+        // The previous implementation `BeginInvoke`d a fresh delegate on every
+        // single Log() call. Under load (e.g. curl/aria progress streams emitting
+        // dozens of lines per second) this floods the dispatcher with thousands
+        // of UI continuations, blocks render frames, and produces visible lag.
+        // Now we accumulate entries in a queue and drain them in a single
+        // dispatcher pass at Background priority — so user input keeps absolute
+        // priority over log rendering.
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(LogChannel Channel, string Message)> _pendingLogs = new();
+        private int _logFlushQueued;
+
         private static void TrimCollection(ObservableCollection<LogEntry> col)
         {
             while (col.Count > MaxLogEntries)
@@ -148,28 +159,46 @@ namespace OctoFetch.ViewModels
 
         private void OnLogReceived(LogChannel channel, string message)
         {
-            Application.Current?.Dispatcher.BeginInvoke((Action)(() =>
+            _pendingLogs.Enqueue((channel, message));
+            if (System.Threading.Interlocked.Exchange(ref _logFlushQueued, 1) == 1) return;
+
+            var dispatcher = Application.Current?.Dispatcher;
+            if (dispatcher == null) { System.Threading.Interlocked.Exchange(ref _logFlushQueued, 0); return; }
+
+            dispatcher.BeginInvoke(
+                System.Windows.Threading.DispatcherPriority.Background,
+                (Action)FlushPendingLogs);
+        }
+
+        private void FlushPendingLogs()
+        {
+            // Reset the gate first, then drain. If new entries arrive while we're
+            // draining, OnLogReceived schedules another pass.
+            System.Threading.Interlocked.Exchange(ref _logFlushQueued, 0);
+
+            while (_pendingLogs.TryDequeue(out var entry))
             {
-                switch (channel)
+                var color = ColorFor(entry.Message);
+                switch (entry.Channel)
                 {
                     case LogChannel.Downloader:
-                        DownloaderLogs.Add(new LogEntry { Message = $"[{DateTime.Now:HH:mm:ss}] {message}", Color = ColorFor(message) });
+                        DownloaderLogs.Add(new LogEntry { Message = $"[{DateTime.Now:HH:mm:ss}] {entry.Message}", Color = color });
                         TrimCollection(DownloaderLogs);
                         break;
                     case LogChannel.Settings:
-                        SettingsLogs.Add(new LogEntry { Message = $"[{DateTime.Now:HH:mm}] {message}", Color = ColorFor(message) });
+                        SettingsLogs.Add(new LogEntry { Message = $"[{DateTime.Now:HH:mm}] {entry.Message}", Color = color });
                         TrimCollection(SettingsLogs);
                         break;
                     case LogChannel.Extractor:
-                        if (string.IsNullOrEmpty(message)) ExtractorLogs.Clear();
+                        if (string.IsNullOrEmpty(entry.Message)) ExtractorLogs.Clear();
                         else
                         {
-                            ExtractorLogs.Add(new LogEntry { Message = message, Color = ColorFor(message) });
+                            ExtractorLogs.Add(new LogEntry { Message = entry.Message, Color = color });
                             TrimCollection(ExtractorLogs);
                         }
                         break;
                 }
-            }));
+            }
         }
 
         private static string ColorFor(string m)

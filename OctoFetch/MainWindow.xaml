@@ -34,17 +34,17 @@
                       GlassFrameThickness="0" UseAeroCaptionButtons="False"/>
     </WindowChrome.WindowChrome>
 
-    <Window.CacheMode>
-        <BitmapCache RenderAtScale="1"/>
-    </Window.CacheMode>
+    <!-- A Window-level BitmapCache forces the entire window to re-rasterize on
+         every property change (typing, hover, progress), causing severe lag.
+         Likewise, a soft DropShadowEffect with BlurRadius>0 is a software-shaded
+         effect that is re-evaluated every frame. Both have been removed; the
+         rounded card now uses a thin border for definition instead. -->
 
     <Border Background="{StaticResource WindowBackdrop}"
             CornerRadius="15" Margin="14"
-            md:RippleAssist.IsDisabled="True">
-        <Border.Effect>
-            <DropShadowEffect Color="Black" ShadowDepth="0" BlurRadius="8" Opacity="0.30"
-                                RenderingBias="Performance"/>
-        </Border.Effect>
+            BorderBrush="#FF1F1F2C" BorderThickness="1"
+            md:RippleAssist.IsDisabled="True"
+            md:TransitionAssist.DisableTransitions="True">
 
         <Grid>
             <Grid.ColumnDefinitions>

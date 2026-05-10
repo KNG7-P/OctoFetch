@@ -17,10 +17,6 @@
     <Border Background="{StaticResource BgCard}" CornerRadius="14"
             BorderBrush="{StaticResource BorderBrushDefault}" BorderThickness="1"
             Margin="8">
-        <Border.Effect>
-            <DropShadowEffect Color="Black" ShadowDepth="0" BlurRadius="10" Opacity="0.40"
-                              RenderingBias="Performance"/>
-        </Border.Effect>
         <Grid Margin="24,20">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>

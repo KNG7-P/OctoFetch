@@ -107,43 +107,48 @@
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
-            <!-- Status bar -->
+            <!-- Toolbar: filter, status (+spinner), and result count laid out in a single 4-column grid.
+                 Previously these were stacked into a single row using HorizontalAlignment=Left/Right which
+                 caused them to overlap each other. -->
             <Grid Grid.Row="0" Margin="4,0,4,8">
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" Text="{Binding StatusText}"
-                           Foreground="{StaticResource TextMuted}" FontSize="11.5"
-                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                <TextBlock Grid.Column="1" Text="{Binding ResultCountText}"
-                           Foreground="{StaticResource TextSecondary}" FontSize="11"
-                           VerticalAlignment="Center"/>
-            </Grid>
 
-            <!-- Loading spinner (Material indeterminate ring — GPU-cached, no Storyboards) -->
-            <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Left"
-                        Margin="0,0,0,4"
-                        Visibility="{Binding IsSearching, Converter={StaticResource BoolToVisibility}}">
-                <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
+                <!-- Filter (All / Long / Shorts) on the left -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal"
+                            VerticalAlignment="Center" Margin="0,0,14,0">
+                    <TextBlock Text="Filter:" Foreground="{StaticResource TextMuted}" FontSize="11"
+                               VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <ComboBox Width="100"
+                              Style="{StaticResource CompactComboBox}"
+                              ItemsSource="{Binding VideoFilterOptions}"
+                              SelectedItem="{Binding VideoFilter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                              FontSize="12"/>
+                </StackPanel>
+
+                <!-- Indeterminate spinner appears inline only while a search is running -->
+                <ProgressBar Grid.Column="1"
+                             Style="{StaticResource MaterialDesignCircularProgressBar}"
                              IsIndeterminate="True"
                              Foreground="{StaticResource AccentCyanBrush}"
-                             Width="16" Height="16"
-                             VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <TextBlock Text="Searching…" Foreground="{StaticResource TextMuted}" FontSize="11.5"
-                           VerticalAlignment="Center"/>
-            </StackPanel>
+                             Width="14" Height="14"
+                             VerticalAlignment="Center" Margin="0,0,8,0"
+                             Visibility="{Binding IsSearching, Converter={StaticResource BoolToVisibility}}"/>
 
-            <!-- Video filter (All / Long / Shorts) -->
-            <StackPanel Grid.Row="0" Orientation="Horizontal" HorizontalAlignment="Right"
-                        Margin="0,0,0,4">
-                <TextBlock Text="Filter:" Foreground="{StaticResource TextMuted}" FontSize="11"
-                           VerticalAlignment="Center" Margin="0,0,6,0"/>
-                <ComboBox Width="100"
-                          ItemsSource="{Binding VideoFilterOptions}"
-                          SelectedItem="{Binding VideoFilter, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                          FontSize="12"/>
-            </StackPanel>
+                <!-- Status text, trimmed -->
+                <TextBlock Grid.Column="2" Text="{Binding StatusText}"
+                           Foreground="{StaticResource TextMuted}" FontSize="11.5"
+                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+
+                <!-- Result count on the right -->
+                <TextBlock Grid.Column="3" Text="{Binding ResultCountText}"
+                           Foreground="{StaticResource TextSecondary}" FontSize="11"
+                           VerticalAlignment="Center" Margin="12,0,0,0"/>
+            </Grid>
 
             <!-- Channel results (shown above videos when not in channel view) -->
             <Grid Grid.Row="1">

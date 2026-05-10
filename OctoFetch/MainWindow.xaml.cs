@@ -19,12 +19,17 @@ namespace OctoFetch
             vm.NodeManagement.NewTokenProvider = () => SettingsHost.GetNewToken();
             vm.NodeManagement.ClearNewTokenInput = () => SettingsHost.ClearNewToken();
             vm.FileManager.SelectedItemsProvider = () => FileManagerHost.GetSelectedItems();
-            vm.YouTube.ShowDownloadDialog = (title) =>
+
+            // Shared YouTube quality picker used by both the YouTube tab and the
+            // Dashboard input (when the user pastes a YouTube link there).
+            Models.YouTubeDownloadOptions? ShowYtDialog(string title)
             {
-                var dlg = new Views.Dialogs.YouTubeDownloadDialog(title)
-                    { Owner = this };
+                var dlg = new Views.Dialogs.YouTubeDownloadDialog(title) { Owner = this };
                 return dlg.ShowDialog() == true ? dlg.Result : null;
-            };
+            }
+
+            vm.YouTube.ShowDownloadDialog = ShowYtDialog;
+            vm.Dashboard.ShowYouTubeDialog = ShowYtDialog;
 
             vm.FileManager.PromptForNewFolderName = currentName =>
             {

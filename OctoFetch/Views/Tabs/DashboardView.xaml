@@ -19,7 +19,7 @@
         <!-- Header -->
         <StackPanel Grid.Row="0" Margin="0,0,0,16">
             <TextBlock Text="Dashboard" Style="{StaticResource PageTitle}"/>
-            <TextBlock Text="Drop a link or paste a URL — we'll fan it out across your servers."
+            <TextBlock Text="Drop a link, paste a URL, or paste a YouTube video — we'll route it to the right pipeline."
                        Style="{StaticResource PageSubtitle}"/>
         </StackPanel>
 
@@ -34,7 +34,7 @@
                 <!-- Single mode -->
                 <Grid Visibility="{Binding IsBulkMode, Converter={StaticResource BoolToVisibility}, ConverterParameter=invert}">
                     <TextBox Style="{StaticResource MaterialDesignOutlinedTextBox}"
-                             md:HintAssist.Hint="https:// download link"
+                             md:HintAssist.Hint="https:// download link or YouTube URL"
                              md:HintAssist.IsFloating="True"
                              md:TextFieldAssist.HasClearButton="True"
                              Text="{Binding TargetUrl, UpdateSourceTrigger=PropertyChanged}"
@@ -44,7 +44,7 @@
                 <!-- Bulk mode -->
                 <Grid Visibility="{Binding IsBulkMode, Converter={StaticResource BoolToVisibility}}">
                     <TextBox Style="{StaticResource MaterialDesignOutlinedTextBox}"
-                             md:HintAssist.Hint="One link per line — we'll process them in order"
+                             md:HintAssist.Hint="One link per line — https or YouTube; processed in order"
                              md:HintAssist.IsFloating="True"
                              AcceptsReturn="True"
                              VerticalScrollBarVisibility="Auto"

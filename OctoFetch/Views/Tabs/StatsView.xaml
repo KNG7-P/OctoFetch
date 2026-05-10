@@ -131,7 +131,7 @@
                                         <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <Border Grid.Row="0" VerticalAlignment="Bottom"
-                                            Background="{StaticResource AccentGradient}"
+                                            Background="{StaticResource AccentCyanBrush}"
                                             CornerRadius="4,4,2,2"
                                             Height="{Binding HeightFraction, Converter={StaticResource FractionToHeight}, ConverterParameter=120}"/>
                                     <TextBlock Grid.Row="1" Text="{Binding Count}"
@@ -168,7 +168,7 @@
                                         <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <Border Grid.Row="0" VerticalAlignment="Bottom"
-                                            Background="{StaticResource AccentGradient}"
+                                            Background="{StaticResource AccentCyanBrush}"
                                             CornerRadius="4,4,2,2"
                                             Height="{Binding HeightFraction, Converter={StaticResource FractionToHeight}, ConverterParameter=120}"/>
                                     <TextBlock Grid.Row="1" Text="{Binding Count}"
@@ -205,7 +205,7 @@
                                         <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <Border Grid.Row="0" VerticalAlignment="Bottom"
-                                            Background="{StaticResource AccentGradient}"
+                                            Background="{StaticResource AccentCyanBrush}"
                                             CornerRadius="4,4,2,2"
                                             Height="{Binding HeightFraction, Converter={StaticResource FractionToHeight}, ConverterParameter=120}"/>
                                     <TextBlock Grid.Row="1" Text="{Binding Count}"

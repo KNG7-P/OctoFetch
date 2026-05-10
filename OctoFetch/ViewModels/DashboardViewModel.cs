@@ -25,6 +25,13 @@ namespace OctoFetch.ViewModels
 
         public event Action<string?>? DownloadCompleted;
 
+        /// <summary>
+        /// Hook the host UI installs so we can pop the YouTube quality / format
+        /// dialog when the user pastes a YouTube link into the Dashboard input.
+        /// Returns null if the user cancels.
+        /// </summary>
+        public Func<string, YouTubeDownloadOptions?>? ShowYouTubeDialog { get; set; }
+
         private CancellationTokenSource? _activeCts;
         private CloudNode? _activeNode;
         private long? _activeRunId;
@@ -125,8 +132,61 @@ namespace OctoFetch.ViewModels
             Links.Clear();
 
             var url = TargetUrl.Trim();
+
+            // YouTube links are routed through the dedicated YT workflow instead
+            // of the generic curl/aria leecher, so they're processed end-to-end
+            // with their own quality picker and chunking logic.
+            if (YouTubeUrlHelper.IsYouTubeUrl(url))
+            {
+                var handled = await RunYouTubeFromDashboardAsync(url).ConfigureAwait(true);
+                if (handled) TargetUrl = string.Empty;
+                return;
+            }
+
             await RunSingleAsync(url).ConfigureAwait(true);
             if (Links.Count > 0) TargetUrl = string.Empty;
+        }
+
+        private async Task<bool> RunYouTubeFromDashboardAsync(string url)
+        {
+            if (!YouTubeUrlHelper.TryParse(url, out _, out var canonical))
+                return false;
+
+            // Show the YouTube quality / audio bitrate picker; if the host hasn't
+            // installed one (e.g. design-time), fall back to 1080p mp4.
+            string title;
+            try
+            {
+                ProgressLabel = "Resolving title…";
+                IsProgressVisible = true;
+                title = await YouTubeUrlHelper.FetchTitleAsync(canonical).ConfigureAwait(true);
+            }
+            catch
+            {
+                title = canonical;
+            }
+            finally
+            {
+                IsProgressVisible = false;
+            }
+
+            var options = ShowYouTubeDialog?.Invoke(title);
+            if (options == null) return false;
+
+            var quality = options.Quality switch
+            {
+                var q when q.Contains("1080") => "1080p",
+                var q when q.Contains("720")  => "720p",
+                var q when q.Contains("480")  => "480p",
+                var q when q.Contains("360")  => "360p",
+                _ => "720p",
+            };
+
+            _logger.Log(LogChannel.Downloader,
+                $"🎬 YouTube transfer queued (Dashboard): {title} [{options.Format}, {quality}]");
+
+            await RunYouTubeDownloadAsync(canonical, title, options.Format, quality).ConfigureAwait(true);
+            return true;
         }
 
         // ---- Bulk download (queue) ----------------------------------------
@@ -167,8 +227,22 @@ namespace OctoFetch.ViewModels
             for (var i = 0; i < snapshot.Count; i++)
             {
                 if (_bulkCancelled) break;
-                QueueStatusText = $"{i + 1} / {QueueTotal} — {Truncate(snapshot[i], 60)}";
-                await RunSingleAsync(snapshot[i]).ConfigureAwait(true);
+                var current = snapshot[i];
+                QueueStatusText = $"{i + 1} / {QueueTotal} — {Truncate(current, 60)}";
+
+                // In bulk mode each YouTube link uses sensible defaults (mp4 / 720p)
+                // so we don't pop a dialog for every entry.
+                if (YouTubeUrlHelper.IsYouTubeUrl(current)
+                    && YouTubeUrlHelper.TryParse(current, out _, out var canonical))
+                {
+                    var ytTitle = await YouTubeUrlHelper.FetchTitleAsync(canonical).ConfigureAwait(true);
+                    await RunYouTubeDownloadAsync(canonical, ytTitle, "mp4", "720p").ConfigureAwait(true);
+                }
+                else
+                {
+                    await RunSingleAsync(current).ConfigureAwait(true);
+                }
+
                 QueueDone = i + 1;
             }
 
