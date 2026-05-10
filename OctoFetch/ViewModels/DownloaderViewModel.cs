@@ -23,7 +23,11 @@ namespace OctoFetch.ViewModels
         private readonly AppSettings _settings;
         private readonly IGitHubService _gitHubService;
 
-        private static readonly HttpClient Http = new()
+        private static readonly HttpClient Http = new(new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
+        })
         {
             Timeout = TimeSpan.FromMinutes(30),
         };

@@ -201,11 +201,25 @@
                 <StackPanel Orientation="Vertical"
                         HorizontalAlignment="Center"
                         VerticalAlignment="Center">
-                    <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
-                             Foreground="{StaticResource AccentCyanBrush}"
-                             Width="44" Height="44"
-                             IsIndeterminate="True"
-                             Value="0"/>
+                    <md:PackIcon Kind="Loading" Width="36" Height="36"
+                                 Foreground="{StaticResource AccentCyanBrush}"
+                                 HorizontalAlignment="Center"
+                                 RenderTransformOrigin="0.5,0.5">
+                        <md:PackIcon.RenderTransform>
+                            <RotateTransform x:Name="FmSpinnerRotate"/>
+                        </md:PackIcon.RenderTransform>
+                        <md:PackIcon.Triggers>
+                            <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                <BeginStoryboard>
+                                    <Storyboard RepeatBehavior="Forever">
+                                        <DoubleAnimation Storyboard.TargetName="FmSpinnerRotate"
+                                                         Storyboard.TargetProperty="Angle"
+                                                         From="0" To="360" Duration="0:0:1"/>
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                        </md:PackIcon.Triggers>
+                    </md:PackIcon>
                     <TextBlock Text="{Binding BusyMessage}"
                            Foreground="{StaticResource TextPrimary}"
                            FontSize="13"
