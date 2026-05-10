@@ -124,6 +124,7 @@
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
 
                                     <!-- Icon -->
@@ -198,8 +199,19 @@
                                                      Foreground="{StaticResource DangerBrush}"/>
                                     </Button>
 
-                                    <!-- Remove (only shown when finished) -->
+                                    <!-- View file in explorer (only shown on completed) -->
                                     <Button Grid.Column="4" Style="{StaticResource MaterialDesignIconButton}"
+                                            Width="30" Height="30" Margin="2,0"
+                                            ToolTip="Show file in folder"
+                                            Command="{Binding DataContext.ViewFileCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                            CommandParameter="{Binding}"
+                                            Visibility="{Binding HasFinalFile, Converter={StaticResource BoolToVisibility}}">
+                                        <md:PackIcon Kind="FolderEye" Width="14" Height="14"
+                                                     Foreground="{StaticResource AccentCyanBrush}"/>
+                                    </Button>
+
+                                    <!-- Remove (only shown when finished) -->
+                                    <Button Grid.Column="5" Style="{StaticResource MaterialDesignIconButton}"
                                             Width="30" Height="30" Margin="2,0"
                                             ToolTip="Remove from queue"
                                             Command="{Binding DataContext.RemoveItemCommand, RelativeSource={RelativeSource AncestorType=ListView}}"

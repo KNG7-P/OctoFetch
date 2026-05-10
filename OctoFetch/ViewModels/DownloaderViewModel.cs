@@ -102,6 +102,7 @@ namespace OctoFetch.ViewModels
         {
             var cts = new CancellationTokenSource();
             _cancellations[item.Id] = cts;
+            string? tempDir = null;
 
             await _concurrencySemaphore.WaitAsync(cts.Token).ConfigureAwait(true);
             if (item.Status == DownloadStatus.Cancelled)
@@ -115,12 +116,15 @@ namespace OctoFetch.ViewModels
 
             try
             {
-                await DownloadAndMergeAsync(item, cts.Token).ConfigureAwait(true);
+                tempDir = await DownloadAndMergeAsync(item, cts.Token).ConfigureAwait(true);
             }
             catch (OperationCanceledException)
             {
                 if (item.Status != DownloadStatus.Paused)
+                {
                     item.Status = DownloadStatus.Cancelled;
+                    item.IsFinished = true;
+                }
                 item.ProgressText = item.Status == DownloadStatus.Paused ? "Paused" : "Cancelled";
             }
             catch (Exception ex)
@@ -132,6 +136,11 @@ namespace OctoFetch.ViewModels
             }
             finally
             {
+                // Always clean up temp on non-success
+                if (item.Status != DownloadStatus.Completed && tempDir != null)
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
                 ActiveCount--;
                 if (item.Status == DownloadStatus.Completed) CompletedCount++;
                 UpdateSummary();
@@ -140,14 +149,22 @@ namespace OctoFetch.ViewModels
             }
         }
 
-        private async Task DownloadAndMergeAsync(DownloadItem item, CancellationToken ct)
+        /// <summary>
+        /// Downloads all parts, merges them, extracts if ZIP, and places the
+        /// final file in the correct category subfolder inside the OctoFetch
+        /// download directory.  Returns the temp directory path so the caller
+        /// can clean it up on failure.
+        /// </summary>
+        private async Task<string> DownloadAndMergeAsync(DownloadItem item, CancellationToken ct)
         {
             item.Status = DownloadStatus.Downloading;
 
-            var outputDir = GetOutputDirectory();
-            var tempDir = Path.Combine(outputDir, ".temp", item.Id);
+            // Root = Downloads/OctoFetch  (created by GetOutputDirectory)
+            var rootDir = GetOutputDirectory();
+            var tempDir = Path.Combine(rootDir, ".temp", item.Id);
             Directory.CreateDirectory(tempDir);
 
+            // ── 1. Download every part ──────────────────────────────────
             var partFiles = new List<string>();
             long completedPartsBytes = 0;
             var sw = Stopwatch.StartNew();
@@ -158,23 +175,22 @@ namespace OctoFetch.ViewModels
             {
                 ct.ThrowIfCancellationRequested();
                 while (item.Status == DownloadStatus.Paused)
-                {
                     await Task.Delay(500, ct).ConfigureAwait(true);
-                }
 
                 var part = item.Parts[i];
                 item.CurrentPart = i + 1;
-                item.ProgressText = "Downloading…";
+                item.ProgressText = item.Parts.Count == 1
+                    ? "Downloading…"
+                    : $"Downloading part {i + 1}/{item.Parts.Count}…";
 
                 var partPath = Path.Combine(tempDir, part.Name);
                 partFiles.Add(partPath);
 
+                // Build curl command
                 var url = part.RawUrl;
                 var args = $"-L -k --retry 3 --retry-delay 2 --connect-timeout 30 -o \"{partPath}\"";
-
-                if (part.OwnerNode != null && part.OwnerNode.IsPrivate && !string.IsNullOrEmpty(part.OwnerNode.Token))
+                if (part.OwnerNode is { IsPrivate: true, Token.Length: > 0 })
                     args += $" -H \"Authorization: token {part.OwnerNode.Token}\"";
-
                 args += $" \"{url}\"";
 
                 var psi = new ProcessStartInfo
@@ -190,22 +206,21 @@ namespace OctoFetch.ViewModels
                 using var process = Process.Start(psi)
                     ?? throw new InvalidOperationException("Failed to start curl.exe");
 
+                // Monitor file size for progress (throttled)
                 while (!process.HasExited)
                 {
                     ct.ThrowIfCancellationRequested();
                     while (item.Status == DownloadStatus.Paused)
-                    {
                         await Task.Delay(500, ct).ConfigureAwait(false);
-                    }
 
                     var now = DateTime.UtcNow;
-                    if ((now - lastUiUpdate).TotalMilliseconds >= 500 && File.Exists(partPath))
+                    if ((now - lastUiUpdate).TotalMilliseconds >= 600 && File.Exists(partPath))
                     {
                         lastUiUpdate = now;
                         try
                         {
-                            var currentSize = new FileInfo(partPath).Length;
-                            var totalDownloaded = completedPartsBytes + currentSize;
+                            var currentPartSize = new FileInfo(partPath).Length;
+                            var totalDownloaded = completedPartsBytes + currentPartSize;
                             item.DownloadedBytes = totalDownloaded;
 
                             var elapsed = sw.Elapsed.TotalSeconds;
@@ -219,51 +234,68 @@ namespace OctoFetch.ViewModels
                                     item.EtaText = FormatEta(remaining);
                                 }
                             }
-                            item.ProgressPercent = item.TotalBytes > 0
-                                ? Math.Min((double)totalDownloaded / item.TotalBytes * 100.0, 99.0)
-                                : (double)(i * 100 + (currentSize > 0 ? 50 : 0)) / item.Parts.Count;
-                            item.SizeText = $"{FormatBytes(totalDownloaded)} / {(item.TotalBytes > 0 ? FormatBytes(item.TotalBytes) : "?")}";
+
+                            if (item.TotalBytes > 0)
+                                item.ProgressPercent = Math.Min((double)totalDownloaded / item.TotalBytes * 100.0, 99.0);
+                            else if (item.Parts.Count > 1)
+                                item.ProgressPercent = (double)i / item.Parts.Count * 100.0;
+
+                            item.SizeText = item.TotalBytes > 0
+                                ? $"{FormatBytes(totalDownloaded)} / {FormatBytes(item.TotalBytes)}"
+                                : FormatBytes(totalDownloaded);
                         }
-                        catch { /* file may be locked briefly */ }
+                        catch { /* file may be locked */ }
                     }
-                    await Task.Delay(500, ct).ConfigureAwait(false);
+                    await Task.Delay(600, ct).ConfigureAwait(false);
                 }
 
+                // Validate curl exit
                 var exitCode = process.ExitCode;
                 if (exitCode != 0)
                 {
                     var stderr = await process.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
                     throw new IOException($"curl failed (exit {exitCode}): {stderr.Trim()}");
                 }
-
                 if (!File.Exists(partPath) || new FileInfo(partPath).Length == 0)
                     throw new IOException($"Downloaded file is empty: {part.Name}");
 
+                // Update cumulative progress
                 var partSize = new FileInfo(partPath).Length;
                 completedPartsBytes += partSize;
-                if (i == 0) item.TotalBytes = partSize * item.Parts.Count;
+                if (i == 0 && item.Parts.Count > 1)
+                    item.TotalBytes = partSize * item.Parts.Count; // estimate
+                else if (item.Parts.Count == 1)
+                    item.TotalBytes = partSize;
                 item.DownloadedBytes = completedPartsBytes;
                 item.SizeText = $"{FormatBytes(completedPartsBytes)} / {FormatBytes(item.TotalBytes)}";
             }
 
-            // Merge parts
-            item.Status = DownloadStatus.Merging;
-            item.ProgressText = "Merging parts…";
-            item.ProgressPercent = 100;
-
-            var mergedPath = Path.Combine(tempDir, "merged.bin");
-            await using (var outFs = File.Create(mergedPath))
+            // ── 2. Merge parts (if multiple) ────────────────────────────
+            string mergedPath;
+            if (partFiles.Count == 1)
             {
-                foreach (var pf in partFiles.OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
+                mergedPath = partFiles[0];
+            }
+            else
+            {
+                item.Status = DownloadStatus.Merging;
+                item.ProgressText = "Merging parts…";
+                item.ProgressPercent = 100;
+
+                mergedPath = Path.Combine(tempDir, "merged.bin");
+                await using (var outFs = File.Create(mergedPath))
                 {
-                    ct.ThrowIfCancellationRequested();
-                    await using var inFs = File.OpenRead(pf);
-                    await inFs.CopyToAsync(outFs, ct).ConfigureAwait(false);
+                    foreach (var pf in partFiles)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        await using var inFs = File.OpenRead(pf);
+                        await inFs.CopyToAsync(outFs, ct).ConfigureAwait(false);
+                    }
                 }
             }
 
-            // Determine output file
-            string finalOutputPath;
+            // ── 3. Determine output file / extract ZIP ──────────────────
+            string finalOutputPath = string.Empty;
             var category = "Other";
 
             if (IsZipFile(mergedPath))
@@ -271,74 +303,89 @@ namespace OctoFetch.ViewModels
                 item.ProgressText = "Extracting archive…";
                 var extractDir = Path.Combine(tempDir, "extracted");
                 Directory.CreateDirectory(extractDir);
-                ZipFile.ExtractToDirectory(mergedPath, extractDir);
+
+                try
+                {
+                    ZipFile.ExtractToDirectory(mergedPath, extractDir);
+                }
+                catch (InvalidDataException)
+                {
+                    // Not actually a valid ZIP — treat as regular file
+                    category = GetCategory(Path.GetExtension(item.DisplayName));
+                    var categoryDir = Path.Combine(rootDir, category);
+                    Directory.CreateDirectory(categoryDir);
+                    finalOutputPath = GetUniqueFilePath(Path.Combine(categoryDir, item.DisplayName));
+                    File.Move(mergedPath, finalOutputPath);
+                    goto Finish;
+                }
 
                 var extractedFiles = Directory.GetFiles(extractDir, "*", SearchOption.AllDirectories);
-                if (extractedFiles.Length == 1)
+                if (extractedFiles.Length == 0)
+                {
+                    // Empty ZIP — save the archive itself
+                    category = "Compressed";
+                    var categoryDir = Path.Combine(rootDir, category);
+                    Directory.CreateDirectory(categoryDir);
+                    finalOutputPath = GetUniqueFilePath(Path.Combine(categoryDir, item.DisplayName + ".zip"));
+                    File.Move(mergedPath, finalOutputPath);
+                }
+                else if (extractedFiles.Length == 1)
                 {
                     var ext = Path.GetExtension(extractedFiles[0]);
                     category = GetCategory(ext);
-                    var categoryDir = Path.Combine(outputDir, category);
+                    var categoryDir = Path.Combine(rootDir, category);
                     Directory.CreateDirectory(categoryDir);
-                    finalOutputPath = Path.Combine(categoryDir, Path.GetFileName(extractedFiles[0]));
-                    finalOutputPath = GetUniqueFilePath(finalOutputPath);
+                    finalOutputPath = GetUniqueFilePath(Path.Combine(categoryDir, Path.GetFileName(extractedFiles[0])));
                     File.Move(extractedFiles[0], finalOutputPath);
                 }
-                else if (extractedFiles.Length > 1)
+                else
                 {
-                    var mainFile = extractedFiles
-                        .OrderByDescending(f => new FileInfo(f).Length)
-                        .First();
+                    var mainFile = extractedFiles.OrderByDescending(f => new FileInfo(f).Length).First();
                     var ext = Path.GetExtension(mainFile);
                     category = GetCategory(ext);
-                    var categoryDir = Path.Combine(outputDir, category);
+                    var categoryDir = Path.Combine(rootDir, category);
                     Directory.CreateDirectory(categoryDir);
 
                     foreach (var ef in extractedFiles)
                     {
-                        var destPath = Path.Combine(categoryDir, Path.GetFileName(ef));
-                        destPath = GetUniqueFilePath(destPath);
+                        var destPath = GetUniqueFilePath(Path.Combine(categoryDir, Path.GetFileName(ef)));
                         File.Move(ef, destPath);
                     }
                     finalOutputPath = Path.Combine(categoryDir, Path.GetFileName(mainFile));
                 }
-                else
-                {
-                    category = "Other";
-                    var categoryDir = Path.Combine(outputDir, category);
-                    Directory.CreateDirectory(categoryDir);
-                    finalOutputPath = Path.Combine(categoryDir, item.DisplayName + ".zip");
-                    finalOutputPath = GetUniqueFilePath(finalOutputPath);
-                    File.Move(mergedPath, finalOutputPath);
-                }
             }
             else
             {
+                // Not a ZIP — use original extension or guess from parts
                 var ext = GuessExtensionFromName(item.DisplayName);
                 if (string.IsNullOrEmpty(ext))
                     ext = GuessExtensionFromParts(item.Parts);
                 category = GetCategory(ext);
-                var categoryDir = Path.Combine(outputDir, category);
+                var categoryDir = Path.Combine(rootDir, category);
                 Directory.CreateDirectory(categoryDir);
 
                 var outName = string.IsNullOrWhiteSpace(ext)
                     ? item.DisplayName
                     : Path.GetFileNameWithoutExtension(item.DisplayName) + ext;
-                finalOutputPath = Path.Combine(categoryDir, outName);
-                finalOutputPath = GetUniqueFilePath(finalOutputPath);
+                finalOutputPath = GetUniqueFilePath(Path.Combine(categoryDir, outName));
                 File.Move(mergedPath, finalOutputPath);
             }
 
-            // Cleanup temp
+        Finish:
+            // ── 4. Cleanup temp & mark completed ────────────────────────
             try { Directory.Delete(tempDir, true); } catch { }
 
+            item.FinalFilePath = finalOutputPath;
             item.Status = DownloadStatus.Completed;
             item.IsFinished = true;
             item.ProgressText = $"Saved to {category}";
             item.ProgressPercent = 100;
+            item.SizeText = FormatBytes(item.TotalBytes);
             item.SpeedText = string.Empty;
             item.EtaText = string.Empty;
             _logger.Log(LogChannel.Downloader, $"✅ Downloaded: {item.DisplayName} → {finalOutputPath}");
+
+            return tempDir;
         }
 
         private string GetOutputDirectory()
@@ -410,6 +457,25 @@ namespace OctoFetch.ViewModels
                 || q.Status == DownloadStatus.Cancelled).ToList();
             foreach (var d in done) Queue.Remove(d);
             UpdateSummary();
+        }
+
+        [RelayCommand]
+        private void ViewFile(DownloadItem? item)
+        {
+            if (item == null || string.IsNullOrEmpty(item.FinalFilePath)) return;
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"/select, \"{item.FinalFilePath}\"",
+                    UseShellExecute = false,
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogException(LogChannel.Downloader, "Failed to show file", ex);
+            }
         }
 
         [RelayCommand]

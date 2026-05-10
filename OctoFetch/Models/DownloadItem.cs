@@ -36,6 +36,9 @@ namespace OctoFetch.Models
         [ObservableProperty] private int _totalParts;
 
         [ObservableProperty] private bool _isFinished;
+        [ObservableProperty] private string _finalFilePath = string.Empty;
+
+        public bool HasFinalFile => !string.IsNullOrEmpty(FinalFilePath) && Status == DownloadStatus.Completed;
 
         public string StatusText => Status switch
         {
@@ -49,7 +52,12 @@ namespace OctoFetch.Models
             _ => string.Empty,
         };
 
-        partial void OnStatusChanged(DownloadStatus value) => OnPropertyChanged(nameof(StatusText));
+        partial void OnStatusChanged(DownloadStatus value)
+        {
+            OnPropertyChanged(nameof(StatusText));
+            OnPropertyChanged(nameof(HasFinalFile));
+        }
         partial void OnCurrentPartChanged(int value) => OnPropertyChanged(nameof(StatusText));
+        partial void OnFinalFilePathChanged(string value) => OnPropertyChanged(nameof(HasFinalFile));
     }
 }
