@@ -586,6 +586,14 @@ namespace OctoFetch.Services
             int consecutiveErrors = 0;
             const int errorLogThreshold = 3;
 
+            // De-dupe the periodic status log: re-log only when the run's status,
+            // percent, or label actually changes. Previously every poll cycle
+            // re-emitted the same "In Progress (33%): ..." line which flooded
+            // the activity log.
+            WorkflowRunStatus? lastLoggedStatus = null;
+            int lastLoggedPercent = -1;
+            string lastLoggedLabel = string.Empty;
+
             for (var attempt = 0; attempt < maxAttempts; attempt++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -626,12 +634,23 @@ namespace OctoFetch.Services
                         return;
                     }
 
-                    _logger.Log(LogChannel.Downloader,
-                        current.Status == WorkflowRunStatus.Queued
-                            ? $"⏳ [{node.RepoName}] YouTube: waiting for a runner..."
-                            : current.Status == WorkflowRunStatus.InProgress
-                                ? $"🎬 [{node.RepoName}] YouTube ({lastKnownPercent}%): {lastKnownLabel}"
-                                : $"🔄 [{node.RepoName}] Status: {current.Status}");
+                    var statusChanged = current.Status != lastLoggedStatus;
+                    var progressChanged = current.Status == WorkflowRunStatus.InProgress
+                        && (lastKnownPercent != lastLoggedPercent
+                            || !string.Equals(lastKnownLabel, lastLoggedLabel, StringComparison.Ordinal));
+
+                    if (statusChanged || progressChanged)
+                    {
+                        _logger.Log(LogChannel.Downloader,
+                            current.Status == WorkflowRunStatus.Queued
+                                ? $"⏳ [{node.RepoName}] YouTube: waiting for a runner..."
+                                : current.Status == WorkflowRunStatus.InProgress
+                                    ? $"🎬 [{node.RepoName}] YouTube ({lastKnownPercent}%): {lastKnownLabel}"
+                                    : $"🔄 [{node.RepoName}] Status: {current.Status}");
+                        lastLoggedStatus = current.Status;
+                        lastLoggedPercent = lastKnownPercent;
+                        lastLoggedLabel = lastKnownLabel;
+                    }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
@@ -753,6 +772,14 @@ namespace OctoFetch.Services
             int consecutiveErrors = 0;
             const int errorLogThreshold = 3;
 
+            // De-dupe the periodic status log: re-log only when the run's status,
+            // percent, or label actually changes. Previously every poll cycle
+            // re-emitted the same "In Progress (33%): ..." line which flooded
+            // the activity log.
+            WorkflowRunStatus? lastLoggedStatus = null;
+            int lastLoggedPercent = -1;
+            string lastLoggedLabel = string.Empty;
+
             for (var attempt = 0; attempt < maxAttempts; attempt++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -793,12 +820,23 @@ namespace OctoFetch.Services
                         return;
                     }
 
-                    _logger.Log(LogChannel.Downloader,
-                        current.Status == WorkflowRunStatus.Queued
-                            ? $"⏳ [{node.RepoName}] Queued: waiting for a runner..."
-                            : current.Status == WorkflowRunStatus.InProgress
-                                ? $"⚙️ [{node.RepoName}] In Progress ({lastKnownPercent}%): {lastKnownLabel}"
-                                : $"🔄 [{node.RepoName}] Status: {current.Status}");
+                    var statusChanged = current.Status != lastLoggedStatus;
+                    var progressChanged = current.Status == WorkflowRunStatus.InProgress
+                        && (lastKnownPercent != lastLoggedPercent
+                            || !string.Equals(lastKnownLabel, lastLoggedLabel, StringComparison.Ordinal));
+
+                    if (statusChanged || progressChanged)
+                    {
+                        _logger.Log(LogChannel.Downloader,
+                            current.Status == WorkflowRunStatus.Queued
+                                ? $"⏳ [{node.RepoName}] Queued: waiting for a runner..."
+                                : current.Status == WorkflowRunStatus.InProgress
+                                    ? $"⚙️ [{node.RepoName}] In Progress ({lastKnownPercent}%): {lastKnownLabel}"
+                                    : $"🔄 [{node.RepoName}] Status: {current.Status}");
+                        lastLoggedStatus = current.Status;
+                        lastLoggedPercent = lastKnownPercent;
+                        lastLoggedLabel = lastKnownLabel;
+                    }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
@@ -899,14 +937,21 @@ namespace OctoFetch.Services
                     .ConfigureAwait(false);
                 if (contents == null) return;
 
+                // Hand each link to the UI without logging per-file. A single
+                // summary line below replaces the previous per-link log spam
+                // (the links are visible in the Dashboard's "Links" panel).
+                var count = 0;
                 foreach (var item in contents.Where(c => c.Type == Octokit.ContentType.File))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (IsInternalFile(item.Name)) continue;
                     var url = BuildRawUrl(node, item.Path);
                     onLinkFetched.Invoke(item.Name, url);
-                    _logger.Log(LogChannel.Downloader, $"🔗 Fetched: {item.Name}");
+                    count++;
                 }
+
+                if (count > 0)
+                    _logger.Log(LogChannel.Downloader, $"🔗 {count} link(s) ready in the Links panel.");
             }
             catch (Exception ex)
             {

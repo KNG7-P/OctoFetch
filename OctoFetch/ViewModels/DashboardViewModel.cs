@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using OctoFetch.Exceptions;
@@ -38,6 +39,12 @@ namespace OctoFetch.ViewModels
         private long? _activeRunId;
         private string? _lastDispatchedFolder;
 
+        // Tracks the GitHub workflow run wall-clock time so the dashboard can
+        // show a live "elapsed" counter (the cloud Action does the heavy work,
+        // so the user needs feedback that the run hasn't stalled).
+        private DateTime _runStartedAtUtc;
+        private DispatcherTimer? _elapsedTimer;
+
         // Single URL.
         [ObservableProperty] private string _targetUrl = string.Empty;
 
@@ -48,6 +55,10 @@ namespace OctoFetch.ViewModels
         [ObservableProperty] private bool _isSafeNameActive = true;
         [ObservableProperty] private bool _isObfuscateNameActive;
         [ObservableProperty] private bool _isLeechRunning;
+
+        // Wall-clock elapsed time for the active GitHub run (e.g. "00:42").
+        // Driven by a 1Hz DispatcherTimer that only ticks while a run is live.
+        [ObservableProperty] private string _elapsedText = string.Empty;
 
         // Real progress (0-100).
         [ObservableProperty] private int _progressValue;
@@ -350,6 +361,38 @@ namespace OctoFetch.ViewModels
         {
             StartLeechCommand.NotifyCanExecuteChanged();
             CancelLeechCommand.NotifyCanExecuteChanged();
+
+            if (value)
+            {
+                _runStartedAtUtc = DateTime.UtcNow;
+                ElapsedText = "00:00";
+                EnsureElapsedTimer();
+                _elapsedTimer!.Start();
+            }
+            else
+            {
+                _elapsedTimer?.Stop();
+                // Keep the final elapsed value visible only while the progress
+                // card itself is still showing; the card hides on completion.
+            }
+        }
+
+        private void EnsureElapsedTimer()
+        {
+            if (_elapsedTimer != null) return;
+
+            _elapsedTimer = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromSeconds(1),
+            };
+            _elapsedTimer.Tick += (_, _) =>
+            {
+                var elapsed = DateTime.UtcNow - _runStartedAtUtc;
+                if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+                ElapsedText = elapsed.TotalHours >= 1
+                    ? elapsed.ToString(@"h\:mm\:ss")
+                    : elapsed.ToString(@"mm\:ss");
+            };
         }
 
         // ---- Cancel --------------------------------------------------------

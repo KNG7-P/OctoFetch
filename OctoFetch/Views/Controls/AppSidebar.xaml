@@ -54,16 +54,7 @@
                     <StackPanel Orientation="Horizontal">
                         <md:PackIcon Kind="FolderMultipleOutline" Width="18" Height="18"
                                      Margin="0,0,12,0" VerticalAlignment="Center"/>
-                        <TextBlock Text="My files" VerticalAlignment="Center"/>
-                    </StackPanel>
-                </RadioButton>
-                <RadioButton Style="{StaticResource NavRailButton}"
-                             IsChecked="{Binding IsExtractorActive, Mode=TwoWay}"
-                             Command="{Binding NavigateExtractorCommand}">
-                    <StackPanel Orientation="Horizontal">
-                        <md:PackIcon Kind="ZipBox" Width="18" Height="18"
-                                     Margin="0,0,12,0" VerticalAlignment="Center"/>
-                        <TextBlock Text="Extract zip" VerticalAlignment="Center"/>
+                        <TextBlock Text="File manager" VerticalAlignment="Center"/>
                     </StackPanel>
                 </RadioButton>
 
@@ -83,6 +74,15 @@
                         <md:PackIcon Kind="DownloadCircleOutline" Width="18" Height="18"
                                      Margin="0,0,12,0" VerticalAlignment="Center"/>
                         <TextBlock Text="Downloads" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </RadioButton>
+                <RadioButton Style="{StaticResource NavRailButton}"
+                             IsChecked="{Binding IsExtractorActive, Mode=TwoWay}"
+                             Command="{Binding NavigateExtractorCommand}">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="ZipBox" Width="18" Height="18"
+                                     Margin="0,0,12,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="Extract zip" VerticalAlignment="Center"/>
                     </StackPanel>
                 </RadioButton>
 
