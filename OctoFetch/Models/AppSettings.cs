@@ -91,43 +91,6 @@ namespace OctoFetch.Models
         /// </summary>
         public List<string> YouTubeApiKeys { get; set; } = new();
 
-        /// <summary>
-        /// Download engine for YouTube videos. Two values supported today:
-        ///   "yt-hub"   → existing API-hub workflow (default)
-        ///   "yt-dlp"   → advanced yt-dlp based workflow (supports cookies, codecs)
-        /// </summary>
-        private string _youTubeEngine = "yt-hub";
-        public string YouTubeEngine
-        {
-            get => _youTubeEngine;
-            set => SetProperty(ref _youTubeEngine, value);
-        }
-
-        /// <summary>
-        /// Absolute path to a Netscape-format cookies.txt file. Only used by
-        /// the yt-dlp engine; the file's contents are inlined into the workflow
-        /// dispatch input at trigger time.
-        /// </summary>
-        private string _youTubeCookiesPath = string.Empty;
-        public string YouTubeCookiesPath
-        {
-            get => _youTubeCookiesPath;
-            set => SetProperty(ref _youTubeCookiesPath, value);
-        }
-
-        /// <summary>
-        /// Optional proxy URL (http://user:pass@host:port or socks5://host:port)
-        /// passed to yt-dlp. GitHub Actions IPs are sometimes flagged as bots
-        /// by YouTube; routing through a residential proxy bypasses the block.
-        /// Only used by the yt-dlp engine.
-        /// </summary>
-        private string _youTubeProxy = string.Empty;
-        public string YouTubeProxy
-        {
-            get => _youTubeProxy;
-            set => SetProperty(ref _youTubeProxy, value);
-        }
-
         // Download manager settings
         private int _maxConcurrentDownloads = 2;
         public int MaxConcurrentDownloads

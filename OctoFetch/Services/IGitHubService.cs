@@ -55,10 +55,7 @@ namespace OctoFetch.Services
             Action<string, string> onLinkFetched,
             Action<CloudNode, long>? onRunResolved = null,
             Action<int, string>? onProgress = null,
-            CancellationToken cancellationToken = default,
-            string engine = "yt-hub",
-            string? cookies = null,
-            string? proxy = null);
+            CancellationToken cancellationToken = default);
 
         Task CancelDispatchedRunAsync(CloudNode node, long runId, CancellationToken cancellationToken = default);
         Task<IReadOnlyList<RemoteFile>> GetAllCloudFilesAggregatedAsync(CancellationToken cancellationToken = default);

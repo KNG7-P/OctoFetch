@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:md="http://materialdesigninxaml.net/winfx/xaml/themes"
         Title="YouTube Settings"
-        Width="620" Height="760"
+        Width="560" Height="400"
         WindowStartupLocation="CenterOwner"
         WindowStyle="None"
         AllowsTransparency="True"
@@ -28,107 +28,29 @@
             <StackPanel Grid.Row="0" Margin="0,0,0,14">
                 <TextBlock Text="YouTube Settings" FontSize="18" FontWeight="SemiBold"
                            Foreground="{StaticResource TextPrimary}"/>
-                <TextBlock Text="API keys, download engine, and cookies for restricted content."
+                <TextBlock Text="YouTube Data API v3 keys used for in-app search."
                            Foreground="{StaticResource TextMuted}" FontSize="11.5" Margin="0,4,0,0"/>
             </StackPanel>
 
             <!-- Body -->
-            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                <StackPanel>
-                    <!-- API keys section -->
-                    <TextBlock Text="Data API Keys" FontWeight="SemiBold" FontSize="13"
-                               Foreground="{StaticResource TextPrimary}" Margin="0,0,0,4"/>
-                    <TextBlock Text="Add one key per line. Search load is rotated across keys; exhausted keys are skipped for the rest of the session."
-                               Foreground="{StaticResource TextMuted}" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"/>
+            <StackPanel Grid.Row="1">
+                <TextBlock Text="Data API Keys" FontWeight="SemiBold" FontSize="13"
+                           Foreground="{StaticResource TextPrimary}" Margin="0,0,0,4"/>
+                <TextBlock TextWrapping="Wrap"
+                           Foreground="{StaticResource TextMuted}" FontSize="11" Margin="0,0,0,8"
+                           Text="Add one key per line. Search load is rotated across keys; exhausted keys are skipped for the rest of the session. Each key allows ~100 searches/day."/>
 
-                    <TextBox x:Name="TxtApiKeys"
-                             Style="{StaticResource MaterialDesignOutlinedTextBox}"
-                             md:HintAssist.Hint="YouTube Data API v3 keys (one per line)"
-                             md:HintAssist.IsFloating="True"
-                             AcceptsReturn="True"
-                             TextWrapping="NoWrap"
-                             VerticalScrollBarVisibility="Auto"
-                             HorizontalScrollBarVisibility="Auto"
-                             MinHeight="120"
-                             FontSize="12" Padding="12,10"/>
-
-                    <Separator Margin="0,18,0,12"
-                               Background="{StaticResource BorderBrushDefault}" Height="1"/>
-
-                    <!-- Engine section -->
-                    <TextBlock Text="Download Engine" FontWeight="SemiBold" FontSize="13"
-                               Foreground="{StaticResource TextPrimary}" Margin="0,0,0,4"/>
-                    <TextBlock Text="Choose how OctoFetch fetches YouTube media. yt-hub is faster; yt-dlp supports cookies and more codecs."
-                               Foreground="{StaticResource TextMuted}" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"/>
-
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-                        <RadioButton x:Name="RbEngineHub" GroupName="YTEngine"
-                                     Content="yt-hub (default)"
-                                     Foreground="{StaticResource TextPrimary}"
-                                     Margin="0,0,18,0"/>
-                        <RadioButton x:Name="RbEngineDlp" GroupName="YTEngine"
-                                     Content="yt-dlp (advanced)"
-                                     Foreground="{StaticResource TextPrimary}"/>
-                    </StackPanel>
-
-                    <Separator Margin="0,18,0,12"
-                               Background="{StaticResource BorderBrushDefault}" Height="1"/>
-
-                    <!-- Cookies section -->
-                    <TextBlock Text="Cookies File (yt-dlp only)" FontWeight="SemiBold" FontSize="13"
-                               Foreground="{StaticResource TextPrimary}" Margin="0,0,0,4"/>
-                    <TextBlock Text="Optional Netscape-format cookies.txt for age- or region-restricted videos."
-                               Foreground="{StaticResource TextMuted}" FontSize="11" Margin="0,0,0,8" TextWrapping="Wrap"/>
-
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBox Grid.Column="0" x:Name="TxtCookies"
-                                 Style="{StaticResource MaterialDesignOutlinedTextBox}"
-                                 md:HintAssist.Hint="Path to cookies.txt"
-                                 md:HintAssist.IsFloating="True"
-                                 FontSize="12" Padding="12,10"
-                                 IsReadOnly="True"/>
-                        <Button Grid.Column="1" Margin="8,0,0,0"
-                                Style="{StaticResource MaterialDesignOutlinedButton}"
-                                BorderBrush="{StaticResource BorderBrushDefault}"
-                                Foreground="{StaticResource TextSecondary}"
-                                md:ButtonAssist.CornerRadius="10"
-                                Padding="14,6" Click="BtnBrowseCookies_Click">
-                            <StackPanel Orientation="Horizontal">
-                                <md:PackIcon Kind="FolderOpen" Width="14" Height="14"
-                                             Margin="0,0,6,0" VerticalAlignment="Center"/>
-                                <TextBlock Text="Browse" VerticalAlignment="Center" FontSize="12"/>
-                            </StackPanel>
-                        </Button>
-                    </Grid>
-                    <Button HorizontalAlignment="Left" Margin="0,6,0,0"
-                            Style="{StaticResource MaterialDesignFlatButton}"
-                            Foreground="{StaticResource TextMuted}"
-                            Padding="0,2"
-                            Click="BtnClearCookies_Click">
-                        <TextBlock Text="Clear" FontSize="11"/>
-                    </Button>
-
-                    <Separator Margin="0,18,0,12"
-                               Background="{StaticResource BorderBrushDefault}" Height="1"/>
-
-                    <!-- Proxy section -->
-                    <TextBlock Text="Proxy (yt-dlp only)" FontWeight="SemiBold" FontSize="13"
-                               Foreground="{StaticResource TextPrimary}" Margin="0,0,0,4"/>
-                    <TextBlock TextWrapping="Wrap"
-                               Foreground="{StaticResource TextMuted}" FontSize="11" Margin="0,0,0,8"
-                               Text="GitHub Actions IP ranges are frequently bot-flagged by YouTube. Pass a residential HTTP/SOCKS proxy here to route yt-dlp through it. Format: http://user:pass@host:port or socks5://host:port. Leave empty to disable."/>
-
-                    <TextBox x:Name="TxtProxy"
-                             Style="{StaticResource MaterialDesignOutlinedTextBox}"
-                             md:HintAssist.Hint="Proxy URL"
-                             md:HintAssist.IsFloating="True"
-                             FontSize="12" Padding="12,10"/>
-                </StackPanel>
-            </ScrollViewer>
+                <TextBox x:Name="TxtApiKeys"
+                         Style="{StaticResource MaterialDesignOutlinedTextBox}"
+                         md:HintAssist.Hint="YouTube Data API v3 keys (one per line)"
+                         md:HintAssist.IsFloating="True"
+                         AcceptsReturn="True"
+                         TextWrapping="NoWrap"
+                         VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Auto"
+                         MinHeight="170"
+                         FontSize="12" Padding="12,10"/>
+            </StackPanel>
 
             <!-- Buttons -->
             <Grid Grid.Row="2" Margin="0,16,0,0">

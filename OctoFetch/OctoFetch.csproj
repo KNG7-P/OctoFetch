@@ -34,7 +34,6 @@
 	<ItemGroup>
 		<EmbeddedResource Include="Resources\smart-downloader.yml" />
 		<EmbeddedResource Include="Resources\youtube_downloader.yml" />
-		<EmbeddedResource Include="Resources\youtube_adv_download.yml" />
 	</ItemGroup>
 
 	<ItemGroup>

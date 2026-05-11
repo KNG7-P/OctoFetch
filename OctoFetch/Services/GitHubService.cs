@@ -29,12 +29,9 @@ namespace OctoFetch.Services
         private const string YouTubeYamlVersionMarker = "# OctoFetch-YouTube-Version:";
         private const int CurrentYouTubeYamlVersion = 2;
 
-        // yt-dlp based "advanced" engine — installs alongside the API-hub one
-        // so the user can switch engines per-trigger without re-onboarding.
-        private const string YouTubeAdvWorkflowFileName = "youtube_adv_download.yml";
-        private const string YouTubeAdvWorkflowPath = ".github/workflows/" + YouTubeAdvWorkflowFileName;
-        private const string YouTubeAdvYamlVersionMarker = "# OctoFetch-YouTubeAdv-Version:";
-        private const int CurrentYouTubeAdvYamlVersion = 4;
+        // Legacy yt-dlp engine workflow file. Removed; we clean it from nodes
+        // that still have it lying around on init.
+        private const string LegacyYouTubeAdvWorkflowPath = ".github/workflows/youtube_adv_download.yml";
 
         private static readonly HashSet<string> InternalFileNames =
             new(StringComparer.OrdinalIgnoreCase) { "checksums.sha256", ".gitkeep" };
@@ -128,7 +125,7 @@ namespace OctoFetch.Services
 
                     await EnsureWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
                     await EnsureYouTubeWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
-                    await EnsureYouTubeAdvWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
+                    await RemoveLegacyYouTubeAdvWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
 
                     node.IsConnected = true;
                     node.BadgeColor = "#10B981";
@@ -336,78 +333,38 @@ namespace OctoFetch.Services
             }
         }
 
-        // -------- YouTube advanced (yt-dlp) workflow injection ---------------
-        private static string LoadEmbeddedYouTubeAdvWorkflowYaml()
-        {
-            var asm = Assembly.GetExecutingAssembly();
-            var name = asm.GetManifestResourceNames()
-                .FirstOrDefault(n => n.EndsWith("youtube_adv_download.yml", StringComparison.OrdinalIgnoreCase))
-                ?? throw new OctoFetchException("Embedded YouTube-adv workflow YAML not found.");
-            using var stream = asm.GetManifestResourceStream(name)
-                ?? throw new OctoFetchException("Could not open embedded YouTube-adv workflow YAML stream.");
-            using var reader = new StreamReader(stream, Encoding.UTF8);
-            return reader.ReadToEnd();
-        }
-
-        private static int? ExtractYouTubeAdvYamlVersion(string content)
-        {
-            if (string.IsNullOrEmpty(content)) return null;
-            var match = Regex.Match(content, $@"{Regex.Escape(YouTubeAdvYamlVersionMarker)}\s*(\d+)");
-            return match.Success && int.TryParse(match.Groups[1].Value, out var v) ? v : null;
-        }
-
-        private async Task EnsureYouTubeAdvWorkflowAsync(CloudNode node, CancellationToken cancellationToken)
+        // -------- Cleanup: remove legacy yt-dlp workflow file ----------------
+        // The yt-dlp engine was retired; nodes onboarded while it existed still
+        // have the file lying around. Best-effort silent removal on init.
+        private async Task RemoveLegacyYouTubeAdvWorkflowAsync(CloudNode node, CancellationToken cancellationToken)
         {
             if (node.Client == null || node.Username == null) return;
             cancellationToken.ThrowIfCancellationRequested();
 
-            var yaml = LoadEmbeddedYouTubeAdvWorkflowYaml();
-
             try
             {
                 var existing = await node.Client.Repository.Content
-                    .GetAllContents(node.Username, node.RepoName, YouTubeAdvWorkflowPath)
+                    .GetAllContents(node.Username, node.RepoName, LegacyYouTubeAdvWorkflowPath)
                     .ConfigureAwait(false);
 
                 var current = existing?.FirstOrDefault();
-                if (current == null)
-                {
-                    await CreateYouTubeAdvWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
-                    return;
-                }
+                if (current == null) return;
 
-                var existingYaml = current.Content ?? string.Empty;
-                var existingVersion = ExtractYouTubeAdvYamlVersion(existingYaml);
-                if (existingVersion is null || existingVersion < CurrentYouTubeAdvYamlVersion)
-                {
-                    _logger.Log(LogChannel.Settings,
-                        $"\ud83d\udd01 Updating yt-dlp workflow on [{node.RepoName}] (v{existingVersion?.ToString() ?? "?"} \u2192 v{CurrentYouTubeAdvYamlVersion})...");
-                    await node.Client.Repository.Content.UpdateFile(
-                        node.Username, node.RepoName, YouTubeAdvWorkflowPath,
-                        new UpdateFileRequest($"chore: upgrade yt-dlp workflow to v{CurrentYouTubeAdvYamlVersion}", yaml, current.Sha, node.DefaultBranch)
-                    ).ConfigureAwait(false);
-                }
+                _logger.Log(LogChannel.Settings,
+                    $"\ud83e\uddf9 Removing legacy yt-dlp workflow from [{node.RepoName}]...");
+                await node.Client.Repository.Content.DeleteFile(
+                    node.Username, node.RepoName, LegacyYouTubeAdvWorkflowPath,
+                    new DeleteFileRequest("chore: remove unused yt-dlp workflow", current.Sha, node.DefaultBranch)
+                ).ConfigureAwait(false);
             }
             catch (NotFoundException)
             {
-                await CreateYouTubeAdvWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        private async Task CreateYouTubeAdvWorkflowAsync(CloudNode node, string yaml, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
-            {
-                _logger.Log(LogChannel.Settings, $"\ud83d\udee0\ufe0f Injecting yt-dlp workflow into [{node.RepoName}]...");
-                await node.Client!.Repository.Content.CreateFile(
-                    node.Username!, node.RepoName, YouTubeAdvWorkflowPath,
-                    new CreateFileRequest("chore: init yt-dlp workflow", yaml, node.DefaultBranch)
-                ).ConfigureAwait(false);
+                // file already absent — nothing to do.
             }
             catch (Exception ex)
             {
-                _logger.LogException(LogChannel.Settings, $"Failed to inject yt-dlp workflow on [{node.RepoName}]", ex);
+                _logger.LogException(LogChannel.Settings,
+                    $"Failed to remove legacy yt-dlp workflow on [{node.RepoName}]", ex);
             }
         }
 
@@ -551,10 +508,7 @@ namespace OctoFetch.Services
             Action<string, string> onLinkFetched,
             Action<CloudNode, long>? onRunResolved = null,
             Action<int, string>? onProgress = null,
-            CancellationToken cancellationToken = default,
-            string engine = "yt-hub",
-            string? cookies = null,
-            string? proxy = null)
+            CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(videoUrl))
                 throw new ArgumentException("Video URL must not be empty.", nameof(videoUrl));
@@ -563,12 +517,10 @@ namespace OctoFetch.Services
             if (node.Client == null || node.Username == null)
                 throw new NodeConnectionException(node.RepoName, "Client not initialized.");
 
-            var useAdvanced = string.Equals(engine, "yt-dlp", StringComparison.OrdinalIgnoreCase);
-            var workflowFile = useAdvanced ? YouTubeAdvWorkflowFileName : YouTubeWorkflowFileName;
-            var engineLabel = useAdvanced ? "yt-dlp" : "yt-hub";
+            var workflowFile = YouTubeWorkflowFileName;
 
             var folderName = BuildFolderName(videoUrl, isSafe, isObfuscated, tag ?? "YouTube");
-            _logger.Log(LogChannel.Downloader, $"🎬 [{node.RepoName}] YouTube download ({engineLabel}) started. Folder: {folderName}");
+            _logger.Log(LogChannel.Downloader, $"🎬 [{node.RepoName}] YouTube download started. Folder: {folderName}");
 
             var inputs = new Dictionary<string, object>
             {
@@ -578,10 +530,6 @@ namespace OctoFetch.Services
                 ["desired_quality"] = quality,
                 ["chunk_size"] = _chunkSizeProvider(),
             };
-            if (useAdvanced && !string.IsNullOrEmpty(cookies))
-                inputs["cookies"] = cookies;
-            if (useAdvanced && !string.IsNullOrWhiteSpace(proxy))
-                inputs["proxy"] = proxy.Trim();
 
             var dispatchTime = DateTimeOffset.UtcNow.AddSeconds(-60);
 
@@ -592,7 +540,7 @@ namespace OctoFetch.Services
                     new CreateWorkflowDispatch(node.DefaultBranch) { Inputs = inputs }
                 ).ConfigureAwait(false);
 
-                _logger.Log(LogChannel.Downloader, $"⏳ YouTube trigger sent ({engineLabel}) for: {videoTitle}. Locating workflow run...");
+                _logger.Log(LogChannel.Downloader, $"⏳ YouTube trigger sent for: {videoTitle}. Locating workflow run...");
                 await MonitorYouTubeAndFetchAsync(node, folderName, dispatchTime, onLinkFetched, onRunResolved, onProgress, cancellationToken, workflowFile).ConfigureAwait(false);
             }
             catch (OperationCanceledException)

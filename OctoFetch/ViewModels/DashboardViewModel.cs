@@ -464,21 +464,6 @@ namespace OctoFetch.ViewModels
 
             try
             {
-                var engine = string.IsNullOrWhiteSpace(_settings.YouTubeEngine) ? "yt-hub" : _settings.YouTubeEngine;
-                string? cookies = null;
-                string? proxy = null;
-                if (string.Equals(engine, "yt-dlp", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (!string.IsNullOrWhiteSpace(_settings.YouTubeCookiesPath) &&
-                        System.IO.File.Exists(_settings.YouTubeCookiesPath))
-                    {
-                        try { cookies = await System.IO.File.ReadAllTextAsync(_settings.YouTubeCookiesPath, _activeCts.Token).ConfigureAwait(true); }
-                        catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "Failed to read cookies file", ex); }
-                    }
-                    if (!string.IsNullOrWhiteSpace(_settings.YouTubeProxy))
-                        proxy = _settings.YouTubeProxy.Trim();
-                }
-
                 await _gitHubService.TriggerYouTubeLeechAsync(
                     videoUrl,
                     videoTitle,
@@ -490,10 +475,7 @@ namespace OctoFetch.ViewModels
                     OnLinkFetched,
                     OnRunResolved,
                     OnProgress,
-                    _activeCts.Token,
-                    engine,
-                    cookies,
-                    proxy).ConfigureAwait(true);
+                    _activeCts.Token).ConfigureAwait(true);
 
                 _toastService.ShowSuccess("YouTube download finished",
                     $"{Truncate(videoTitle, 80)} — links ready in Dashboard.");
