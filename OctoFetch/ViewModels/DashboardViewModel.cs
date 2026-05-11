@@ -466,12 +466,17 @@ namespace OctoFetch.ViewModels
             {
                 var engine = string.IsNullOrWhiteSpace(_settings.YouTubeEngine) ? "yt-hub" : _settings.YouTubeEngine;
                 string? cookies = null;
-                if (string.Equals(engine, "yt-dlp", StringComparison.OrdinalIgnoreCase) &&
-                    !string.IsNullOrWhiteSpace(_settings.YouTubeCookiesPath) &&
-                    System.IO.File.Exists(_settings.YouTubeCookiesPath))
+                string? proxy = null;
+                if (string.Equals(engine, "yt-dlp", StringComparison.OrdinalIgnoreCase))
                 {
-                    try { cookies = await System.IO.File.ReadAllTextAsync(_settings.YouTubeCookiesPath, _activeCts.Token).ConfigureAwait(true); }
-                    catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "Failed to read cookies file", ex); }
+                    if (!string.IsNullOrWhiteSpace(_settings.YouTubeCookiesPath) &&
+                        System.IO.File.Exists(_settings.YouTubeCookiesPath))
+                    {
+                        try { cookies = await System.IO.File.ReadAllTextAsync(_settings.YouTubeCookiesPath, _activeCts.Token).ConfigureAwait(true); }
+                        catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "Failed to read cookies file", ex); }
+                    }
+                    if (!string.IsNullOrWhiteSpace(_settings.YouTubeProxy))
+                        proxy = _settings.YouTubeProxy.Trim();
                 }
 
                 await _gitHubService.TriggerYouTubeLeechAsync(
@@ -487,7 +492,8 @@ namespace OctoFetch.ViewModels
                     OnProgress,
                     _activeCts.Token,
                     engine,
-                    cookies).ConfigureAwait(true);
+                    cookies,
+                    proxy).ConfigureAwait(true);
 
                 _toastService.ShowSuccess("YouTube download finished",
                     $"{Truncate(videoTitle, 80)} — links ready in Dashboard.");

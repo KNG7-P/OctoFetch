@@ -1,4 +1,4 @@
-# OctoFetch-YouTubeAdv-Version: 3
+# OctoFetch-YouTubeAdv-Version: 4
 
 name: 'YouTube Advanced Engine (yt-dlp)'
 
@@ -29,6 +29,10 @@ on:
         description: 'Optional Netscape cookies.txt content for restricted videos'
         required: false
         type: string
+      proxy:
+        description: 'Optional proxy URL (http://user:pass@host:port or socks5://...). Use this if the GitHub Actions IP is bot-flagged by YouTube.'
+        required: false
+        type: string
       chunk_size:
         required: false
         type: string
@@ -57,10 +61,17 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg zip unzip curl git
           pip3 install -q -U "yt-dlp[default]"
+          # Deno is yt-dlp's preferred JS runtime for the newer YouTube player
+          # signature scripts. Without it yt-dlp falls back to no-JS extraction
+          # and many formats / signature decoders go missing.
+          curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip
+          sudo unzip -q -o /tmp/deno.zip -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/deno
+          deno --version || true
           # bgutil-ytdlp-pot-provider plugin lets yt-dlp request POT tokens
           # from a local Node.js server. GitHub Actions runners live on cloud
           # IPs that YouTube flags with "Sign in to confirm you're not a bot"
-          # — passing a valid PO token from the server bypasses that wall
+          # — passing a valid PO token from the server may bypass that wall
           # without needing logged-in cookies.
           pip3 install -q -U bgutil-ytdlp-pot-provider
           # GitHub-hosted ubuntu-latest runners already have Node 20+ available.
@@ -127,23 +138,34 @@ jobs:
             FORMAT_ARGS="-f bestvideo[height<=${QUALITY_NUM}]+bestaudio/best[height<=${QUALITY_NUM}] --merge-output-format mp4"
           fi
 
+          # Optional user-provided proxy. If the GitHub Actions IP is bot-flagged
+          # by YouTube, even with POT tokens and cookies the download will fail;
+          # routing through a residential proxy bypasses the IP block.
+          PROXY_INPUT="${{ github.event.inputs.proxy }}"
+          PROXY_ARGS=""
+          if [ -n "${PROXY_INPUT:-}" ]; then
+            PROXY_ARGS="--proxy $PROXY_INPUT"
+            echo "Using user-supplied proxy."
+          fi
+
           # GitHub Actions runners live on cloud IP ranges that YouTube heavily
           # bot-checks ("Sign in to confirm you're not a bot"). The bgutil PO
           # Token server provides a valid Proof-of-Origin token via the yt-dlp
-          # plugin we installed in setup, which bypasses that wall on most
-          # videos. We still try multiple player clients in order in case the
-          # POT token doesn't satisfy a particular client.
+          # plugin, which may bypass that wall on many (but not all) videos.
+          # We try multiple player clients in order in case POT alone isn't
+          # enough for a particular client.
           BGUTIL_ARGS="youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416"
-          CLIENTS=("default" "tv_simply" "tv" "ios" "web_safari" "web")
+          CLIENTS=("default" "mweb" "tv_simply" "tv" "ios" "web_safari" "web")
           DOWNLOADED=0
           LAST_LOG=""
+          FIRST=1
           for CLIENT in "${CLIENTS[@]}"; do
             echo "::group::Attempting yt-dlp with player_client=$CLIENT (+POT)"
             EXTRA_COOKIES=""
-            # Cookies are only useful for `web`-family clients; the TV/iOS ones
-            # auth themselves.
+            # Cookies are useful for web-family + mweb clients; the TV/iOS
+            # ones auth themselves and reject cookies.
             case "$CLIENT" in
-              web|web_safari) EXTRA_COOKIES="$COOKIE_ARGS" ;;
+              web|web_safari|mweb) EXTRA_COOKIES="$COOKIE_ARGS" ;;
             esac
 
             if [ "$CLIENT" = "default" ]; then
@@ -152,13 +174,24 @@ jobs:
               CLIENT_ARGS="--extractor-args youtube:player_client=$CLIENT"
             fi
 
+            # Verbose flag on the very first attempt so we can see whether the
+            # POT provider plugin actually loaded (look for
+            # '[debug] [youtube] [pot] PO Token Providers: bgutil:http-...').
+            VERBOSE_ARGS=""
+            if [ "$FIRST" = "1" ]; then
+              VERBOSE_ARGS="-v"
+              FIRST=0
+            fi
+
             set +e
             yt-dlp \
+              $VERBOSE_ARGS \
               --newline \
               --concurrent-fragments 4 \
               --no-playlist \
               --extractor-args "$BGUTIL_ARGS" \
               $CLIENT_ARGS \
+              $PROXY_ARGS \
               --retries 3 \
               --fragment-retries 5 \
               $FORMAT_ARGS \
@@ -183,10 +216,11 @@ jobs:
           done
 
           if [ "$DOWNLOADED" -ne 1 ]; then
-            echo "All yt-dlp clients failed. Last log tail:"
-            [ -n "$LAST_LOG" ] && tail -n 80 "$LAST_LOG" || true
-            echo "bgutil server log tail:"
-            tail -n 40 /tmp/bgutil.log || true
+            echo "::error::All yt-dlp clients failed. Your runner IP is likely bot-flagged by YouTube. Try supplying a residential proxy via the 'proxy' workflow input."
+            echo "=== Last attempt's full log ==="
+            [ -n "$LAST_LOG" ] && tail -n 120 "$LAST_LOG" || true
+            echo "=== bgutil server log ==="
+            tail -n 60 /tmp/bgutil.log || true
             exit 1
           fi
 

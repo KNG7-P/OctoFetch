@@ -115,6 +115,19 @@ namespace OctoFetch.Models
             set => SetProperty(ref _youTubeCookiesPath, value);
         }
 
+        /// <summary>
+        /// Optional proxy URL (http://user:pass@host:port or socks5://host:port)
+        /// passed to yt-dlp. GitHub Actions IPs are sometimes flagged as bots
+        /// by YouTube; routing through a residential proxy bypasses the block.
+        /// Only used by the yt-dlp engine.
+        /// </summary>
+        private string _youTubeProxy = string.Empty;
+        public string YouTubeProxy
+        {
+            get => _youTubeProxy;
+            set => SetProperty(ref _youTubeProxy, value);
+        }
+
         // Download manager settings
         private int _maxConcurrentDownloads = 2;
         public int MaxConcurrentDownloads

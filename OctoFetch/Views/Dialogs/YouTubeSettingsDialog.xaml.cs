@@ -36,6 +36,7 @@ namespace OctoFetch.Views.Dialogs
                 RbEngineHub.IsChecked = true;
 
             TxtCookies.Text = _settings.YouTubeCookiesPath ?? string.Empty;
+            TxtProxy.Text = _settings.YouTubeProxy ?? string.Empty;
         }
 
         private void BtnBrowseCookies_Click(object sender, RoutedEventArgs e)
@@ -78,6 +79,7 @@ namespace OctoFetch.Views.Dialogs
 
             _settings.YouTubeEngine = (RbEngineDlp.IsChecked == true) ? "yt-dlp" : "yt-hub";
             _settings.YouTubeCookiesPath = (TxtCookies.Text ?? string.Empty).Trim();
+            _settings.YouTubeProxy = (TxtProxy.Text ?? string.Empty).Trim();
 
             DialogResult = true;
             Close();

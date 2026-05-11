@@ -34,7 +34,7 @@ namespace OctoFetch.Services
         private const string YouTubeAdvWorkflowFileName = "youtube_adv_download.yml";
         private const string YouTubeAdvWorkflowPath = ".github/workflows/" + YouTubeAdvWorkflowFileName;
         private const string YouTubeAdvYamlVersionMarker = "# OctoFetch-YouTubeAdv-Version:";
-        private const int CurrentYouTubeAdvYamlVersion = 3;
+        private const int CurrentYouTubeAdvYamlVersion = 4;
 
         private static readonly HashSet<string> InternalFileNames =
             new(StringComparer.OrdinalIgnoreCase) { "checksums.sha256", ".gitkeep" };
@@ -553,7 +553,8 @@ namespace OctoFetch.Services
             Action<int, string>? onProgress = null,
             CancellationToken cancellationToken = default,
             string engine = "yt-hub",
-            string? cookies = null)
+            string? cookies = null,
+            string? proxy = null)
         {
             if (string.IsNullOrWhiteSpace(videoUrl))
                 throw new ArgumentException("Video URL must not be empty.", nameof(videoUrl));
@@ -579,6 +580,8 @@ namespace OctoFetch.Services
             };
             if (useAdvanced && !string.IsNullOrEmpty(cookies))
                 inputs["cookies"] = cookies;
+            if (useAdvanced && !string.IsNullOrWhiteSpace(proxy))
+                inputs["proxy"] = proxy.Trim();
 
             var dispatchTime = DateTimeOffset.UtcNow.AddSeconds(-60);
 

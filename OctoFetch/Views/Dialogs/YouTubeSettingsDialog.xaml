@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:md="http://materialdesigninxaml.net/winfx/xaml/themes"
         Title="YouTube Settings"
-        Width="620" Height="640"
+        Width="620" Height="760"
         WindowStartupLocation="CenterOwner"
         WindowStyle="None"
         AllowsTransparency="True"
@@ -111,6 +111,22 @@
                             Click="BtnClearCookies_Click">
                         <TextBlock Text="Clear" FontSize="11"/>
                     </Button>
+
+                    <Separator Margin="0,18,0,12"
+                               Background="{StaticResource BorderBrushDefault}" Height="1"/>
+
+                    <!-- Proxy section -->
+                    <TextBlock Text="Proxy (yt-dlp only)" FontWeight="SemiBold" FontSize="13"
+                               Foreground="{StaticResource TextPrimary}" Margin="0,0,0,4"/>
+                    <TextBlock TextWrapping="Wrap"
+                               Foreground="{StaticResource TextMuted}" FontSize="11" Margin="0,0,0,8"
+                               Text="GitHub Actions IP ranges are frequently bot-flagged by YouTube. Pass a residential HTTP/SOCKS proxy here to route yt-dlp through it. Format: http://user:pass@host:port or socks5://host:port. Leave empty to disable."/>
+
+                    <TextBox x:Name="TxtProxy"
+                             Style="{StaticResource MaterialDesignOutlinedTextBox}"
+                             md:HintAssist.Hint="Proxy URL"
+                             md:HintAssist.IsFloating="True"
+                             FontSize="12" Padding="12,10"/>
                 </StackPanel>
             </ScrollViewer>
 
