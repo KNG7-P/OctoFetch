@@ -20,6 +20,7 @@ namespace OctoFetch.ViewModels
         private readonly IToastService _toastService;
         private readonly IUsageStatsService _usageStats;
         private readonly Action _persistSettings;
+        private readonly AppSettings _settings;
 
         private readonly List<(string FileName, string Url)> _runLinks = new();
 
@@ -75,12 +76,14 @@ namespace OctoFetch.ViewModels
             IAppLogger logger,
             IToastService toastService,
             IUsageStatsService usageStats,
+            AppSettings settings,
             Action persistSettings)
         {
             _gitHubService = gitHubService;
             _logger = logger;
             _toastService = toastService;
             _usageStats = usageStats;
+            _settings = settings;
             _persistSettings = persistSettings;
         }
 
@@ -461,6 +464,16 @@ namespace OctoFetch.ViewModels
 
             try
             {
+                var engine = string.IsNullOrWhiteSpace(_settings.YouTubeEngine) ? "yt-hub" : _settings.YouTubeEngine;
+                string? cookies = null;
+                if (string.Equals(engine, "yt-dlp", StringComparison.OrdinalIgnoreCase) &&
+                    !string.IsNullOrWhiteSpace(_settings.YouTubeCookiesPath) &&
+                    System.IO.File.Exists(_settings.YouTubeCookiesPath))
+                {
+                    try { cookies = await System.IO.File.ReadAllTextAsync(_settings.YouTubeCookiesPath, _activeCts.Token).ConfigureAwait(true); }
+                    catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "Failed to read cookies file", ex); }
+                }
+
                 await _gitHubService.TriggerYouTubeLeechAsync(
                     videoUrl,
                     videoTitle,
@@ -472,7 +485,9 @@ namespace OctoFetch.ViewModels
                     OnLinkFetched,
                     OnRunResolved,
                     OnProgress,
-                    _activeCts.Token).ConfigureAwait(true);
+                    _activeCts.Token,
+                    engine,
+                    cookies).ConfigureAwait(true);
 
                 _toastService.ShowSuccess("YouTube download finished",
                     $"{Truncate(videoTitle, 80)} — links ready in Dashboard.");

@@ -132,11 +132,27 @@ namespace OctoFetch.Converters
                 case Image img:
                     img.Source = source;
                     break;
+
                 case ImageBrush brush:
-                    brush.ImageSource = source;
+                    // If the brush is frozen (WPF auto-freezes inline brushes with
+                    // no dynamic bindings) we can't mutate it — but we also have no
+                    // back-reference to its container, so just skip.
+                    if (!brush.IsFrozen) brush.ImageSource = source;
                     break;
+
                 case Border border when border.Background is ImageBrush bb:
-                    bb.ImageSource = source;
+                    if (bb.IsFrozen)
+                    {
+                        // Inline <ImageBrush/> tags in XAML get auto-frozen — clone
+                        // into a mutable copy, set the source, and swap it in.
+                        var clone = (ImageBrush)bb.Clone();
+                        clone.ImageSource = source;
+                        border.Background = clone;
+                    }
+                    else
+                    {
+                        bb.ImageSource = source;
+                    }
                     break;
             }
         }

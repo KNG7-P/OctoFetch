@@ -34,6 +34,7 @@ namespace OctoFetch.Services
                 {
                     var legacy = File.ReadAllText(_legacyPlainPath);
                     var migrated = JsonConvert.DeserializeObject<AppSettings>(legacy) ?? new AppSettings();
+                    MigrateLegacyDefaults(migrated);
                     Save(migrated);
                     File.Delete(_legacyPlainPath);
                     _logger.Log(LogChannel.Settings, "🔐 Migrated plain-text settings to encrypted store and removed the legacy file.");
@@ -53,7 +54,9 @@ namespace OctoFetch.Services
                 var encrypted = File.ReadAllBytes(_encryptedPath);
                 var decrypted = ProtectedData.Unprotect(encrypted, null, DataProtectionScope.CurrentUser);
                 var json = Encoding.UTF8.GetString(decrypted);
-                return JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
+                var loaded = JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
+                MigrateLegacyDefaults(loaded);
+                return loaded;
             }
             catch (CryptographicException ex)
             {
@@ -65,6 +68,37 @@ namespace OctoFetch.Services
                 _logger.LogException(LogChannel.Settings, "Failed to load settings", ex);
                 return new AppSettings();
             }
+        }
+
+        /// <summary>
+        /// Forces older settings files to pick up the current packaged defaults
+        /// that the user wouldn't normally edit through the UI. Currently:
+        /// shrinks any previously-saved upload chunk size to 45M (older
+        /// versions defaulted to 90M, which produced too few large parts).
+        /// </summary>
+        private static void MigrateLegacyDefaults(AppSettings s)
+        {
+            if (string.IsNullOrWhiteSpace(s.ChunkSize) ||
+                s.ChunkSize.Equals("90M", StringComparison.OrdinalIgnoreCase) ||
+                s.ChunkSize.Equals("100M", StringComparison.OrdinalIgnoreCase))
+            {
+                s.ChunkSize = "45M";
+            }
+
+            // Old versions polled every 10s which made progress feel laggy.
+            // Force anything above 5s back down — users who explicitly want
+            // longer intervals can re-set via the JSON file later.
+            if (s.PollIntervalSeconds >= 8) s.PollIntervalSeconds = 3;
+
+            // Fold the legacy single-key field into the list.
+            if (s.YouTubeApiKeys == null) s.YouTubeApiKeys = new System.Collections.Generic.List<string>();
+            if (!string.IsNullOrWhiteSpace(s.YouTubeApiKey) &&
+                !s.YouTubeApiKeys.Contains(s.YouTubeApiKey))
+            {
+                s.YouTubeApiKeys.Add(s.YouTubeApiKey);
+            }
+            // Clear the legacy slot so the list is authoritative going forward.
+            s.YouTubeApiKey = string.Empty;
         }
 
         public void Save(AppSettings settings)

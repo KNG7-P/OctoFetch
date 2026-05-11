@@ -1,0 +1,196 @@
+# OctoFetch-YouTubeAdv-Version: 1
+
+name: 'YouTube Advanced Engine (yt-dlp)'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'YouTube video URL'
+        required: true
+        type: string
+      folder_name:
+        required: true
+        type: string
+      output_format:
+        description: 'mp4 or mp3'
+        required: false
+        type: string
+        default: 'mp4'
+      desired_quality:
+        description: 'Video resolution (e.g. 1080p) or audio bitrate (e.g. 192kbps)'
+        required: false
+        type: string
+        default: '1080p'
+      cookies:
+        description: 'Optional Netscape cookies.txt content for restricted videos'
+        required: false
+        type: string
+      chunk_size:
+        required: false
+        type: string
+        default: "45M"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ytadv-${{ github.event.inputs.folder_name }}
+  cancel-in-progress: false
+
+jobs:
+  yt-dlp-download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg zip
+          pip3 install -q -U "yt-dlp[default]"
+
+      - name: Download via yt-dlp
+        env:
+          URL: ${{ github.event.inputs.video_url }}
+          FORMAT_INPUT: ${{ github.event.inputs.output_format }}
+          QUALITY: ${{ github.event.inputs.desired_quality }}
+          INPUT_COOKIES: ${{ github.event.inputs.cookies }}
+          SECRET_YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: |
+          set -euo pipefail
+          mkdir -p temp_download
+
+          COOKIE_ARGS=""
+          if [ -n "${INPUT_COOKIES:-}" ]; then
+            printf '%s' "$INPUT_COOKIES" > /tmp/cookies.txt
+            COOKIE_ARGS="--cookies /tmp/cookies.txt"
+          elif [ -n "${SECRET_YT_COOKIES:-}" ]; then
+            printf '%s' "$SECRET_YT_COOKIES" > /tmp/cookies.txt
+            COOKIE_ARGS="--cookies /tmp/cookies.txt"
+          fi
+
+          QUALITY_NUM=$(echo "$QUALITY" | grep -o '[0-9]*' | head -1)
+          [ -z "$QUALITY_NUM" ] && QUALITY_NUM=1080
+
+          if [ "$FORMAT_INPUT" = "mp3" ]; then
+            BITRATE=$(echo "$QUALITY" | grep -o '[0-9]*' | head -1)
+            [ -z "$BITRATE" ] && BITRATE=192
+            FORMAT_ARGS="-x --audio-format mp3 --audio-quality ${BITRATE}K"
+          else
+            FORMAT_ARGS="-f bestvideo[height<=${QUALITY_NUM}]+bestaudio/best[height<=${QUALITY_NUM}] --merge-output-format mp4"
+          fi
+
+          yt-dlp \
+            --newline \
+            --concurrent-fragments 4 \
+            --no-playlist \
+            $FORMAT_ARGS \
+            $COOKIE_ARGS \
+            --embed-metadata \
+            --embed-thumbnail \
+            -o "temp_download/%(title)s [%(id)s].%(ext)s" \
+            "$URL"
+
+          ls -lah temp_download/
+
+      - name: Split and organize
+        env:
+          FOLDER_INPUT: ${{ github.event.inputs.folder_name }}
+          CHUNK_SIZE: ${{ github.event.inputs.chunk_size }}
+        run: |
+          set -euo pipefail
+
+          FOLDER=$(printf '%s' "$FOLDER_INPUT" | tr -c 'A-Za-z0-9._-' '_')
+          [ ${#FOLDER} -gt 100 ] && FOLDER="${FOLDER:0:100}"
+          [ -z "$FOLDER" ] && FOLDER="YT_$(date +%Y%m%d%H%M%S)"
+          echo "FOLDER=$FOLDER" >> "$GITHUB_ENV"
+
+          mkdir -p wrap_dir
+          mv temp_download/* wrap_dir/
+          (
+            cd wrap_dir
+            zip -0 -r "../$FOLDER.zip" .
+          )
+
+          mkdir -p "downloads/$FOLDER"
+          split -b "$CHUNK_SIZE" -d -a 3 "$FOLDER.zip" "downloads/$FOLDER/chunk_"
+
+          (
+            cd "downloads/$FOLDER"
+            a=1
+            for i in chunk_*; do
+              new=$(printf "%s.zip.%03d" "$FOLDER" "$a")
+              mv -- "$i" "$new"
+              a=$((a + 1))
+            done
+            sha256sum *.zip.* > checksums.sha256
+          )
+
+      - name: Commit and push
+        env:
+          BATCH_SIZE: 5
+        run: |
+          set -euo pipefail
+
+          git config user.name "OctoFetchBot"
+          git config user.email "bot@octofetch.local"
+          git config http.postBuffer 524288000
+          git config http.lowSpeedLimit 1000
+          git config http.lowSpeedTime 600
+
+          mapfile -t CHUNKS < <(ls "downloads/$FOLDER"/*.zip.* 2>/dev/null | sort)
+          ALL_FILES=( "${CHUNKS[@]}" "downloads/$FOLDER/checksums.sha256" )
+
+          TOTAL=${#ALL_FILES[@]}
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "Nothing to commit." >&2
+            exit 1
+          fi
+
+          push_with_retry() {
+            local label="$1"
+            for attempt in 1 2 3 4 5 6 7; do
+              git fetch origin >/dev/null 2>&1 || true
+              git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)" >/dev/null 2>&1 || true
+              if git push; then
+                echo "  OK $label pushed on attempt $attempt"
+                return 0
+              fi
+              backoff=$((attempt * 5))
+              echo "  retry in ${backoff}s ($label, attempt $attempt)..."
+              sleep "$backoff"
+            done
+            echo "  FAILED $label after 7 attempts" >&2
+            return 1
+          }
+
+          batch_n=0
+          for ((i=0; i<TOTAL; i+=BATCH_SIZE)); do
+            batch_n=$((batch_n + 1))
+            slice=( "${ALL_FILES[@]:i:BATCH_SIZE}" )
+            echo "Batch $batch_n: ${#slice[@]} file(s)"
+
+            git add -- "${slice[@]}"
+            if git diff --cached --quiet; then
+              echo "  nothing staged for batch $batch_n, skipping."
+              continue
+            fi
+
+            git commit -m "Add $FOLDER (batch $batch_n)"
+            push_with_retry "batch $batch_n" || exit 1
+          done
+
+          echo "All batches pushed ($batch_n total)."
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf temp_download wrap_dir .download_info *.zip 2>/dev/null || true

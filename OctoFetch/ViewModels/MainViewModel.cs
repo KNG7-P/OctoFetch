@@ -79,7 +79,7 @@ namespace OctoFetch.ViewModels
 
             Settings = settings;
 
-            Dashboard = new DashboardViewModel(gitHubService, logger, toastService, usageStats, () => SaveSettingsSilently());
+            Dashboard = new DashboardViewModel(gitHubService, logger, toastService, usageStats, settings, () => SaveSettingsSilently());
             NodeManagement = new NodeManagementViewModel(gitHubService, logger, Settings, () =>
             {
                 SaveSettingsSilently();

@@ -46,7 +46,7 @@ namespace OctoFetch.Models
             set => SetProperty(ref _allowInsecureSsl, value);
         }
 
-        private int _pollIntervalSeconds = 10;
+        private int _pollIntervalSeconds = 3;
         public int PollIntervalSeconds
         {
             get => _pollIntervalSeconds;
@@ -74,11 +74,45 @@ namespace OctoFetch.Models
             set => SetProperty(ref _enableToastNotifications, value);
         }
 
-        private string _youTubeApiKey = "AIzaSyA_n19Vp8o_X_l2cMDdEMl6LEuAYXRAD0s";
+        // Legacy single-key field kept so old encrypted settings still deserialise.
+        // The runtime always reads <see cref="YouTubeApiKeys"/>; on first load any
+        // legacy value gets folded into the list (see SettingsService.MigrateLegacyDefaults).
+        private string _youTubeApiKey = string.Empty;
         public string YouTubeApiKey
         {
             get => _youTubeApiKey;
             set => SetProperty(ref _youTubeApiKey, value);
+        }
+
+        /// <summary>
+        /// All YouTube Data API v3 keys the user has supplied. Search load is
+        /// round-robin'd across them, and a key returning quotaExceeded is
+        /// suspended for the remainder of the session.
+        /// </summary>
+        public List<string> YouTubeApiKeys { get; set; } = new();
+
+        /// <summary>
+        /// Download engine for YouTube videos. Two values supported today:
+        ///   "yt-hub"   → existing API-hub workflow (default)
+        ///   "yt-dlp"   → advanced yt-dlp based workflow (supports cookies, codecs)
+        /// </summary>
+        private string _youTubeEngine = "yt-hub";
+        public string YouTubeEngine
+        {
+            get => _youTubeEngine;
+            set => SetProperty(ref _youTubeEngine, value);
+        }
+
+        /// <summary>
+        /// Absolute path to a Netscape-format cookies.txt file. Only used by
+        /// the yt-dlp engine; the file's contents are inlined into the workflow
+        /// dispatch input at trigger time.
+        /// </summary>
+        private string _youTubeCookiesPath = string.Empty;
+        public string YouTubeCookiesPath
+        {
+            get => _youTubeCookiesPath;
+            set => SetProperty(ref _youTubeCookiesPath, value);
         }
 
         // Download manager settings

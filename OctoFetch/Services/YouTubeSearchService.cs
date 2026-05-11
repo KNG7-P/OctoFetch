@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,27 +20,36 @@ namespace OctoFetch.Services
     public class YouTubeSearchService : IYouTubeSearchService, IDisposable
     {
         private const string ApiBase = "https://www.googleapis.com/youtube/v3";
-        private readonly HttpClient _http;
-        private readonly Func<string> _apiKeyProvider;
 
-        public YouTubeSearchService(Func<string> apiKeyProvider)
+        private readonly HttpClient _http;
+        private readonly Func<IReadOnlyList<string>> _apiKeysProvider;
+
+        // Round-robin index across calls.
+        private int _rrCursor;
+
+        // Keys that returned quotaExceeded / 403 — they're suspended for the
+        // remainder of the session. Per-key, so adding a fresh key later still works.
+        private readonly HashSet<string> _exhausted = new(StringComparer.Ordinal);
+        private readonly object _gate = new();
+
+        public YouTubeSearchService(Func<IReadOnlyList<string>> apiKeysProvider)
         {
-            _apiKeyProvider = apiKeyProvider;
+            _apiKeysProvider = apiKeysProvider;
             _http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
             _http.DefaultRequestHeaders.Add("Accept", "application/json");
         }
 
-        private string ApiKey => _apiKeyProvider();
+        // ----- Public API ------------------------------------------------------
 
         public async Task<YouTubeSearchResult> SearchAsync(string query, string? pageToken = null, CancellationToken ct = default)
         {
             var result = new YouTubeSearchResult();
 
-            var url = $"{ApiBase}/search?part=snippet&type=video,channel&maxResults=20&q={Uri.EscapeDataString(query)}&key={ApiKey}";
+            var url = $"{ApiBase}/search?part=snippet&type=video,channel&maxResults=20&q={Uri.EscapeDataString(query)}";
             if (!string.IsNullOrEmpty(pageToken))
                 url += $"&pageToken={Uri.EscapeDataString(pageToken)}";
 
-            var json = await _http.GetStringAsync(url, ct).ConfigureAwait(false);
+            var json = await GetWithKeyRotationAsync(url, ct).ConfigureAwait(false);
             var obj = JObject.Parse(json);
 
             result.NextPageToken = obj["nextPageToken"]?.ToString();
@@ -81,11 +91,9 @@ namespace OctoFetch.Services
                 }
             }
 
-            // Fetch video details (duration, views) in one batch
             if (videoIds.Count > 0)
                 await EnrichVideoDetailsAsync(result.Videos, videoIds, ct).ConfigureAwait(false);
 
-            // Fetch channel subscriber counts in one batch
             if (channelIds.Count > 0)
                 await EnrichChannelDetailsAsync(result.Channels, channelIds, ct).ConfigureAwait(false);
 
@@ -96,8 +104,8 @@ namespace OctoFetch.Services
         {
             var videos = new List<YouTubeVideoItem>();
 
-            var url = $"{ApiBase}/search?part=snippet&channelId={Uri.EscapeDataString(channelId)}&type=video&order=date&maxResults=30&key={ApiKey}";
-            var json = await _http.GetStringAsync(url, ct).ConfigureAwait(false);
+            var url = $"{ApiBase}/search?part=snippet&channelId={Uri.EscapeDataString(channelId)}&type=video&order=date&maxResults=30";
+            var json = await GetWithKeyRotationAsync(url, ct).ConfigureAwait(false);
             var obj = JObject.Parse(json);
 
             var videoIds = new List<string>();
@@ -126,14 +134,13 @@ namespace OctoFetch.Services
 
         public async Task<YouTubeChannelItem?> GetChannelInfoAsync(string channelId, CancellationToken ct = default)
         {
-            // Support both channel IDs and handles (@username)
             string url;
             if (channelId.StartsWith("@"))
-                url = $"{ApiBase}/channels?part=snippet,statistics&forHandle={Uri.EscapeDataString(channelId)}&key={ApiKey}";
+                url = $"{ApiBase}/channels?part=snippet,statistics&forHandle={Uri.EscapeDataString(channelId)}";
             else
-                url = $"{ApiBase}/channels?part=snippet,statistics&id={Uri.EscapeDataString(channelId)}&key={ApiKey}";
+                url = $"{ApiBase}/channels?part=snippet,statistics&id={Uri.EscapeDataString(channelId)}";
 
-            var json = await _http.GetStringAsync(url, ct).ConfigureAwait(false);
+            var json = await GetWithKeyRotationAsync(url, ct).ConfigureAwait(false);
             var obj = JObject.Parse(json);
 
             var items = obj["items"] as JArray;
@@ -154,14 +161,101 @@ namespace OctoFetch.Services
             };
         }
 
+        // ----- Key-rotation core ----------------------------------------------
+
+        /// <summary>
+        /// GETs <paramref name="baseUrl"/> (which must NOT yet carry a <c>key=</c>
+        /// parameter) trying each available API key in turn. The first key that
+        /// returns a 2xx response wins; any key returning 403 (quotaExceeded /
+        /// forbidden) is marked exhausted for the rest of the session.
+        /// </summary>
+        private async Task<string> GetWithKeyRotationAsync(string baseUrl, CancellationToken ct)
+        {
+            var keys = SnapshotAvailableKeys();
+            if (keys.Count == 0)
+                throw new InvalidOperationException("No YouTube Data API keys are configured. Add one or more keys via Settings → YouTube API.");
+
+            HttpRequestException? lastError = null;
+
+            for (var i = 0; i < keys.Count; i++)
+            {
+                var key = keys[i];
+                var url = baseUrl + (baseUrl.Contains('?') ? "&" : "?") + "key=" + Uri.EscapeDataString(key);
+
+                try
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Get, url);
+                    using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+                    var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+                    if (resp.IsSuccessStatusCode)
+                        return body;
+
+                    // Quota / forbidden — burn this key for the session, try next.
+                    if (resp.StatusCode == HttpStatusCode.Forbidden ||
+                        resp.StatusCode == (HttpStatusCode)429 ||
+                        body.Contains("quotaExceeded", StringComparison.OrdinalIgnoreCase) ||
+                        body.Contains("dailyLimitExceeded", StringComparison.OrdinalIgnoreCase))
+                    {
+                        lock (_gate) _exhausted.Add(key);
+                        lastError = new HttpRequestException($"YouTube key exhausted ({resp.StatusCode}); rotating.");
+                        continue;
+                    }
+
+                    // Other HTTP error — bubble up immediately (e.g. bad query, 400).
+                    throw new HttpRequestException($"YouTube API call failed: {(int)resp.StatusCode} {resp.ReasonPhrase} :: {Trim(body)}");
+                }
+                catch (HttpRequestException ex) when (i + 1 < keys.Count)
+                {
+                    lastError = ex;
+                }
+            }
+
+            throw lastError ?? new HttpRequestException("All YouTube API keys are exhausted or unreachable.");
+        }
+
+        /// <summary>
+        /// Returns the currently-usable keys, rotated so the next call doesn't
+        /// hammer the same key first. Exhausted keys are skipped.
+        /// </summary>
+        private List<string> SnapshotAvailableKeys()
+        {
+            var raw = _apiKeysProvider() ?? Array.Empty<string>();
+            var live = new List<string>(raw.Count);
+            lock (_gate)
+            {
+                foreach (var k in raw)
+                {
+                    if (string.IsNullOrWhiteSpace(k)) continue;
+                    if (_exhausted.Contains(k)) continue;
+                    live.Add(k.Trim());
+                }
+                if (live.Count == 0) return live;
+
+                var cursor = _rrCursor++ % live.Count;
+                if (cursor > 0)
+                {
+                    var rotated = new List<string>(live.Count);
+                    rotated.AddRange(live.GetRange(cursor, live.Count - cursor));
+                    rotated.AddRange(live.GetRange(0, cursor));
+                    return rotated;
+                }
+            }
+            return live;
+        }
+
+        private static string Trim(string s) => s.Length > 200 ? s.Substring(0, 200) + "…" : s;
+
+        // ----- Enrichment helpers ---------------------------------------------
+
         private async Task EnrichVideoDetailsAsync(List<YouTubeVideoItem> videos, List<string> videoIds, CancellationToken ct)
         {
             var ids = string.Join(",", videoIds);
-            var url = $"{ApiBase}/videos?part=contentDetails,statistics&id={ids}&key={ApiKey}";
+            var url = $"{ApiBase}/videos?part=contentDetails,statistics&id={ids}";
 
             try
             {
-                var json = await _http.GetStringAsync(url, ct).ConfigureAwait(false);
+                var json = await GetWithKeyRotationAsync(url, ct).ConfigureAwait(false);
                 var obj = JObject.Parse(json);
                 var items = obj["items"] as JArray ?? new JArray();
 
@@ -185,11 +279,11 @@ namespace OctoFetch.Services
         private async Task EnrichChannelDetailsAsync(List<YouTubeChannelItem> channels, List<string> channelIds, CancellationToken ct)
         {
             var ids = string.Join(",", channelIds);
-            var url = $"{ApiBase}/channels?part=statistics&id={ids}&key={ApiKey}";
+            var url = $"{ApiBase}/channels?part=statistics&id={ids}";
 
             try
             {
-                var json = await _http.GetStringAsync(url, ct).ConfigureAwait(false);
+                var json = await GetWithKeyRotationAsync(url, ct).ConfigureAwait(false);
                 var obj = JObject.Parse(json);
                 var items = obj["items"] as JArray ?? new JArray();
 
@@ -207,6 +301,8 @@ namespace OctoFetch.Services
             }
             catch { }
         }
+
+        // ----- Static helpers --------------------------------------------------
 
         private static string GetBestThumbnail(JToken? thumbnails)
         {
@@ -235,7 +331,6 @@ namespace OctoFetch.Services
 
         private static int ParseIsoDuration(string iso)
         {
-            // PT1H2M3S, PT5M30S, PT45S, etc.
             int total = 0;
             var span = iso.AsSpan();
             int idx = span.IndexOf('T');
