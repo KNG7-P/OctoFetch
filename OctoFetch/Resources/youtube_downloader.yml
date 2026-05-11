@@ -1,4 +1,4 @@
-# OctoFetch-YouTube-Version: 2
+# OctoFetch-YouTube-Version: 3
 
 name: 'YouTube Download Engine'
 
@@ -43,10 +43,21 @@ jobs:
     timeout-minutes: 45
     steps:
 
-      - name: Checkout Repository
+      # Sparse + blob:none checkout. Node repos are loaded up with prior
+      # download chunks (.zip.NNN, potentially many GBs), so a normal
+      # `actions/checkout@v4` spends ~1m fetching blobs we never read.
+      # We only need a working git directory to commit + push new files;
+      # `filter: blob:none` skips downloading any existing blobs, and
+      # sparse-checkout limits the working tree to .github/.
+      - name: Checkout Repository (sparse, fast)
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            .github
+          sparse-checkout-cone-mode: false
 
       - name: Install Dependencies
         run: |
