@@ -1,4 +1,4 @@
-# OctoFetch-YouTubeAdv-Version: 1
+# OctoFetch-YouTubeAdv-Version: 2
 
 name: 'YouTube Advanced Engine (yt-dlp)'
 
@@ -55,8 +55,15 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg zip
+          sudo apt-get install -y ffmpeg zip unzip curl
           pip3 install -q -U "yt-dlp[default]"
+          # Deno is yt-dlp's preferred JS runtime for the newer YouTube player
+          # script handlers; without it yt-dlp falls back to no-JS extraction
+          # and many formats / signature decoders go missing.
+          curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip
+          sudo unzip -q -o /tmp/deno.zip -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/deno
+          deno --version || true
 
       - name: Download via yt-dlp
         env:
@@ -89,16 +96,58 @@ jobs:
             FORMAT_ARGS="-f bestvideo[height<=${QUALITY_NUM}]+bestaudio/best[height<=${QUALITY_NUM}] --merge-output-format mp4"
           fi
 
-          yt-dlp \
-            --newline \
-            --concurrent-fragments 4 \
-            --no-playlist \
-            $FORMAT_ARGS \
-            $COOKIE_ARGS \
-            --embed-metadata \
-            --embed-thumbnail \
-            -o "temp_download/%(title)s [%(id)s].%(ext)s" \
-            "$URL"
+          # GitHub Actions runners live on cloud IP ranges that YouTube heavily
+          # bot-checks. The default `web` client hits "Sign in to confirm you're
+          # not a bot" and exported cookies get rotated mid-flight. The `tv` /
+          # `tv_simply` / `ios` clients don't trigger the same bot wall and
+          # don't require a logged-in session, so we try them in order and only
+          # fall back to `web` (with cookies if provided) at the very end.
+          CLIENTS=("tv_simply" "tv" "ios" "web_safari" "web")
+          DOWNLOADED=0
+          LAST_LOG=""
+          for CLIENT in "${CLIENTS[@]}"; do
+            echo "::group::Attempting yt-dlp with player_client=$CLIENT"
+            EXTRA_COOKIES=""
+            # Cookies are only useful for `web`-family clients; the TV/iOS ones
+            # auth themselves.
+            case "$CLIENT" in
+              web|web_safari) EXTRA_COOKIES="$COOKIE_ARGS" ;;
+            esac
+
+            set +e
+            yt-dlp \
+              --newline \
+              --concurrent-fragments 4 \
+              --no-playlist \
+              --extractor-args "youtube:player_client=$CLIENT" \
+              --retries 3 \
+              --fragment-retries 5 \
+              $FORMAT_ARGS \
+              $EXTRA_COOKIES \
+              --embed-metadata \
+              --embed-thumbnail \
+              -o "temp_download/%(title)s [%(id)s].%(ext)s" \
+              "$URL" 2>&1 | tee /tmp/ytdl.$CLIENT.log
+            RC=${PIPESTATUS[0]}
+            set -e
+            echo "::endgroup::"
+
+            if [ "$RC" -eq 0 ] && [ -n "$(ls -A temp_download 2>/dev/null)" ]; then
+              echo "yt-dlp succeeded with player_client=$CLIENT"
+              DOWNLOADED=1
+              break
+            fi
+
+            LAST_LOG="/tmp/ytdl.$CLIENT.log"
+            echo "player_client=$CLIENT failed (rc=$RC), trying next..."
+            rm -rf temp_download/*
+          done
+
+          if [ "$DOWNLOADED" -ne 1 ]; then
+            echo "All yt-dlp clients failed."
+            [ -n "$LAST_LOG" ] && tail -n 60 "$LAST_LOG" || true
+            exit 1
+          fi
 
           ls -lah temp_download/
 

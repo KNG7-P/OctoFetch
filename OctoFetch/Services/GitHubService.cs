@@ -34,7 +34,7 @@ namespace OctoFetch.Services
         private const string YouTubeAdvWorkflowFileName = "youtube_adv_download.yml";
         private const string YouTubeAdvWorkflowPath = ".github/workflows/" + YouTubeAdvWorkflowFileName;
         private const string YouTubeAdvYamlVersionMarker = "# OctoFetch-YouTubeAdv-Version:";
-        private const int CurrentYouTubeAdvYamlVersion = 1;
+        private const int CurrentYouTubeAdvYamlVersion = 2;
 
         private static readonly HashSet<string> InternalFileNames =
             new(StringComparer.OrdinalIgnoreCase) { "checksums.sha256", ".gitkeep" };
