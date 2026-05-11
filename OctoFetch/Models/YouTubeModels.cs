@@ -62,6 +62,17 @@ namespace OctoFetch.Models
         public string? NextPageToken { get; set; }
     }
 
+    /// <summary>
+    /// One page of a channel's Videos tab. <see cref="Continuation"/> is the
+    /// token to pass back to <c>GetChannelVideosAsync</c> for the next page;
+    /// it is <c>null</c> once the channel's archive has been exhausted.
+    /// </summary>
+    public class YouTubeChannelVideosResult
+    {
+        public List<YouTubeVideoItem> Videos { get; set; } = new();
+        public string? Continuation { get; set; }
+    }
+
     public class YouTubeDownloadOptions
     {
         public string VideoUrl { get; set; } = string.Empty;

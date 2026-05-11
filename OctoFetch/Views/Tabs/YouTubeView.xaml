@@ -76,30 +76,76 @@
             </Grid>
         </md:Card>
 
-        <!-- Channel header (when browsing a channel) -->
+        <!-- Channel header (visible only when browsing a channel). The gradient
+             strip mimics the YouTube channel banner; avatar overlaps it like the
+             web client does. Keeps the same card geometry as the rest of the app. -->
         <md:Card Grid.Row="2" Margin="0,10,0,0"
                  Background="{StaticResource BgCard}"
-                 UniformCornerRadius="12" Padding="16,12"
+                 UniformCornerRadius="14" Padding="0"
                  md:ElevationAssist.Elevation="Dp0"
                  Visibility="{Binding IsChannelView, Converter={StaticResource BoolToVisibility}}">
-            <StackPanel Orientation="Horizontal">
-                <Border Width="44" Height="44" CornerRadius="22" Margin="0,0,14,0"
-                        Background="#FF1F1F2D">
-                    <Border CornerRadius="22"
-                            conv:ImageAsyncLoader.Url="{Binding ChannelAvatar}">
-                        <Border.Background>
-                            <ImageBrush Stretch="UniformToFill"
-                                        RenderOptions.BitmapScalingMode="LowQuality"/>
-                        </Border.Background>
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="56"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- Banner strip (gradient — we don't fetch real channel banners). -->
+                <Border Grid.Row="0" CornerRadius="14,14,0,0"
+                        Background="{StaticResource AccentGradient}"
+                        Opacity="0.85"/>
+
+                <!-- Avatar + meta -->
+                <Grid Grid.Row="1" Margin="18,0,18,14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0" Width="72" Height="72" CornerRadius="36"
+                            Margin="0,-32,16,0" BorderThickness="3"
+                            BorderBrush="{StaticResource BgCard}"
+                            Background="#FF1F1F2D">
+                        <Border CornerRadius="33"
+                                conv:ImageAsyncLoader.Url="{Binding ChannelAvatar}">
+                            <Border.Background>
+                                <ImageBrush Stretch="UniformToFill"
+                                            RenderOptions.BitmapScalingMode="LowQuality"/>
+                            </Border.Background>
+                        </Border>
                     </Border>
-                </Border>
-                <StackPanel VerticalAlignment="Center">
-                    <TextBlock Text="{Binding ChannelName}" FontSize="15" FontWeight="SemiBold"
-                               Foreground="{StaticResource TextPrimary}"/>
-                    <TextBlock Text="{Binding ChannelSubs}" FontSize="11.5"
-                               Foreground="{StaticResource TextMuted}"/>
-                </StackPanel>
-            </StackPanel>
+
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,8,0,0">
+                        <TextBlock Text="{Binding ChannelName}" FontSize="17" FontWeight="SemiBold"
+                                   Foreground="{StaticResource TextPrimary}"
+                                   TextTrimming="CharacterEllipsis"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                            <md:PackIcon Kind="AccountGroupOutline" Width="13" Height="13"
+                                         Foreground="{StaticResource AccentCyanBrush}"
+                                         VerticalAlignment="Center" Margin="0,0,4,0"/>
+                            <TextBlock Text="{Binding ChannelSubs}" FontSize="11.5"
+                                       Foreground="{StaticResource TextSecondary}"
+                                       VerticalAlignment="Center"/>
+                            <Border Width="3" Height="3" CornerRadius="1.5" Margin="8,0"
+                                    Background="{StaticResource TextMuted}"
+                                    VerticalAlignment="Center"
+                                    Visibility="{Binding ChannelVideoCountText, Converter={StaticResource StringToVisibility}}"/>
+                            <md:PackIcon Kind="PlayBoxOutline" Width="13" Height="13"
+                                         Foreground="{StaticResource AccentCyanBrush}"
+                                         VerticalAlignment="Center" Margin="0,0,4,0"
+                                         Visibility="{Binding ChannelVideoCountText, Converter={StaticResource StringToVisibility}}"/>
+                            <TextBlock Text="{Binding ChannelVideoCountText}" FontSize="11.5"
+                                       Foreground="{StaticResource TextSecondary}"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding ChannelDescription}" FontSize="11"
+                                   Foreground="{StaticResource TextMuted}"
+                                   TextTrimming="CharacterEllipsis"
+                                   MaxHeight="32" TextWrapping="Wrap" Margin="0,6,0,0"
+                                   Visibility="{Binding ChannelDescription, Converter={StaticResource StringToVisibility}}"/>
+                    </StackPanel>
+                </Grid>
+            </Grid>
         </md:Card>
 
         <!-- Status + results -->
@@ -159,8 +205,10 @@
                     <RowDefinition Height="*"/>
                 </Grid.RowDefinitions>
 
-                <!-- Channel chips -->
-                <ItemsControl Grid.Row="0" ItemsSource="{Binding Channels}" Margin="0,0,0,6">
+                <!-- Channel chips. Each is a pill button that drills into the channel.
+                     Hidden when we're already browsing one (we only show channels in search-result view). -->
+                <ItemsControl Grid.Row="0" ItemsSource="{Binding Channels}" Margin="0,0,0,6"
+                              Visibility="{Binding IsChannelView, Converter={StaticResource InverseBoolToVisibility}}">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
                             <WrapPanel Orientation="Horizontal"/>
@@ -253,13 +301,28 @@
                                                Stretch="UniformToFill"
                                                RenderOptions.BitmapScalingMode="LowQuality"
                                                RenderOptions.CachingHint="Cache"/>
-                                        <!-- Duration badge -->
+                                        <!-- Duration badge for long videos. -->
                                         <Border Background="#CC000000" CornerRadius="4"
                                                 Padding="5,2" Margin="6"
-                                                HorizontalAlignment="Right" VerticalAlignment="Bottom">
+                                                HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                                Visibility="{Binding IsShort, Converter={StaticResource InverseBoolToVisibility}}">
                                             <TextBlock Text="{Binding DurationText}"
                                                        Foreground="White" FontSize="10.5"
                                                        FontWeight="SemiBold"/>
+                                        </Border>
+                                        <!-- Shorts ribbon: red Play-Box style badge so users can
+                                             tell at a glance which entries are shorts vs. regular videos. -->
+                                        <Border Background="#E60023" CornerRadius="4"
+                                                Padding="5,2" Margin="6"
+                                                HorizontalAlignment="Left" VerticalAlignment="Top"
+                                                Visibility="{Binding IsShort, Converter={StaticResource BoolToVisibility}}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <md:PackIcon Kind="Flash" Width="10" Height="10"
+                                                             Foreground="White" VerticalAlignment="Center"
+                                                             Margin="0,0,3,0"/>
+                                                <TextBlock Text="SHORT" Foreground="White" FontSize="9.5"
+                                                           FontWeight="Bold" VerticalAlignment="Center"/>
+                                            </StackPanel>
                                         </Border>
                                     </Grid>
                                 </Border>
@@ -316,19 +379,33 @@
             </Grid>
         </Grid>
 
-        <!-- Load more -->
+        <!-- Load more (also reused for paging the active channel's video archive). -->
         <Button Grid.Row="4" Style="{StaticResource MaterialDesignOutlinedButton}"
                 BorderBrush="{StaticResource AccentCyanBrush}"
                 Foreground="{StaticResource AccentCyanBrush}"
                 md:ButtonAssist.CornerRadius="10"
                 HorizontalAlignment="Center"
-                Padding="24,6" Margin="0,8,0,0"
+                Padding="28,8" Margin="0,10,0,0"
                 Command="{Binding LoadMoreCommand}"
+                IsEnabled="{Binding IsLoadingMore, Converter={StaticResource InverseBool}}"
                 Visibility="{Binding HasMoreResults, Converter={StaticResource BoolToVisibility}}">
             <StackPanel Orientation="Horizontal">
+                <!-- Spinner while a page is loading; chevron the rest of the time. -->
+                <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
+                             IsIndeterminate="True"
+                             Foreground="{StaticResource AccentCyanBrush}"
+                             Width="14" Height="14"
+                             VerticalAlignment="Center" Margin="0,0,8,0"
+                             Visibility="{Binding IsLoadingMore, Converter={StaticResource BoolToVisibility}}"/>
                 <md:PackIcon Kind="ChevronDown" Width="14" Height="14"
-                             Margin="0,0,6,0" VerticalAlignment="Center"/>
-                <TextBlock Text="Load more" VerticalAlignment="Center" FontSize="12.5"/>
+                             Margin="0,0,6,0" VerticalAlignment="Center"
+                             Visibility="{Binding IsLoadingMore, Converter={StaticResource InverseBoolToVisibility}}"/>
+                <TextBlock Text="Load more" VerticalAlignment="Center" FontSize="13"
+                           FontWeight="SemiBold"
+                           Visibility="{Binding IsLoadingMore, Converter={StaticResource InverseBoolToVisibility}}"/>
+                <TextBlock Text="Loading…" VerticalAlignment="Center" FontSize="13"
+                           FontWeight="SemiBold"
+                           Visibility="{Binding IsLoadingMore, Converter={StaticResource BoolToVisibility}}"/>
             </StackPanel>
         </Button>
     </Grid>

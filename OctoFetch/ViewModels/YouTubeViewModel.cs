@@ -31,8 +31,11 @@ namespace OctoFetch.ViewModels
         [ObservableProperty] private string _channelName = string.Empty;
         [ObservableProperty] private string _channelAvatar = string.Empty;
         [ObservableProperty] private string _channelSubs = string.Empty;
+        [ObservableProperty] private string _channelDescription = string.Empty;
+        [ObservableProperty] private string _channelVideoCountText = string.Empty;
 
         [ObservableProperty] private bool _hasMoreResults;
+        [ObservableProperty] private bool _isLoadingMore;
         [ObservableProperty] private string _videoFilter = "All";
 
         public ObservableCollection<string> VideoFilterOptions { get; } = new() { "All", "Long", "Shorts" };
@@ -43,6 +46,10 @@ namespace OctoFetch.ViewModels
 
         private string? _nextPageToken;
         private string _lastQuery = string.Empty;
+        // Channel pagination state: the active channel id + the continuation
+        // token to feed back to GetChannelVideosAsync for "Load more".
+        private string? _channelContinuation;
+        private string _activeChannelId = string.Empty;
         private CancellationTokenSource? _searchCts;
 
         public Func<string, YouTubeDownloadOptions?>? ShowDownloadDialog { get; set; }
@@ -95,6 +102,8 @@ namespace OctoFetch.ViewModels
             Videos.Clear();
             Channels.Clear();
             _nextPageToken = null;
+            _channelContinuation = null;
+            _activeChannelId = string.Empty;
             _lastQuery = query;
             StatusText = $"Searching \"{query}\"…";
 
@@ -135,25 +144,45 @@ namespace OctoFetch.ViewModels
         [RelayCommand]
         private async Task LoadMoreAsync()
         {
-            if (_nextPageToken == null || IsSearching) return;
+            if (IsSearching || IsLoadingMore) return;
 
             _searchCts?.Cancel();
             _searchCts = new CancellationTokenSource();
             var ct = _searchCts.Token;
 
-            IsSearching = true;
+            IsLoadingMore = true;
             try
             {
-                var result = await Task.Run(() => _searchService.SearchAsync(_lastQuery, _nextPageToken, ct), ct).ConfigureAwait(true);
-                ct.ThrowIfCancellationRequested();
+                if (IsChannelView)
+                {
+                    if (string.IsNullOrEmpty(_channelContinuation) || string.IsNullOrEmpty(_activeChannelId)) return;
 
-                foreach (var v in result.Videos) Videos.Add(v);
-                foreach (var c in result.Channels) Channels.Add(c);
-                _nextPageToken = result.NextPageToken;
-                HasMoreResults = _nextPageToken != null;
+                    var page = await Task.Run(
+                        () => _searchService.GetChannelVideosAsync(_activeChannelId, _channelContinuation, ct), ct)
+                        .ConfigureAwait(true);
+                    ct.ThrowIfCancellationRequested();
 
-                var total = Videos.Count + Channels.Count;
-                ResultCountText = $"{total} result(s)";
+                    foreach (var v in page.Videos) Videos.Add(v);
+                    _channelContinuation = page.Continuation;
+                    HasMoreResults = !string.IsNullOrEmpty(_channelContinuation);
+                    ResultCountText = $"{Videos.Count} video(s)";
+                }
+                else
+                {
+                    if (string.IsNullOrEmpty(_nextPageToken)) return;
+
+                    var result = await Task.Run(
+                        () => _searchService.SearchAsync(_lastQuery, _nextPageToken, ct), ct).ConfigureAwait(true);
+                    ct.ThrowIfCancellationRequested();
+
+                    foreach (var v in result.Videos) Videos.Add(v);
+                    foreach (var c in result.Channels) Channels.Add(c);
+                    _nextPageToken = result.NextPageToken;
+                    HasMoreResults = _nextPageToken != null;
+
+                    var total = Videos.Count + Channels.Count;
+                    ResultCountText = $"{total} result(s)";
+                }
             }
             catch (OperationCanceledException) { }
             catch (Exception ex)
@@ -162,7 +191,7 @@ namespace OctoFetch.ViewModels
             }
             finally
             {
-                IsSearching = false;
+                IsLoadingMore = false;
             }
         }
 
@@ -183,6 +212,10 @@ namespace OctoFetch.ViewModels
             Videos.Clear();
             Channels.Clear();
             HasMoreResults = false;
+            _activeChannelId = channelId;
+            _channelContinuation = null;
+            ChannelDescription = string.Empty;
+            ChannelVideoCountText = string.Empty;
 
             try
             {
@@ -195,12 +228,20 @@ namespace OctoFetch.ViewModels
                     ChannelName = channelInfo.Name;
                     ChannelAvatar = channelInfo.ThumbnailUrl;
                     ChannelSubs = channelInfo.SubscribersText;
+                    ChannelDescription = channelInfo.Description;
+                    if (channelInfo.VideoCount > 0)
+                        ChannelVideoCountText = channelInfo.VideoCount == 1
+                            ? "1 video"
+                            : $"{channelInfo.VideoCount:N0} videos";
                 }
 
-                var videos = await Task.Run(() => _searchService.GetChannelVideosAsync(channelId, ct), ct).ConfigureAwait(true);
+                var page = await Task.Run(
+                    () => _searchService.GetChannelVideosAsync(channelId, null, ct), ct).ConfigureAwait(true);
                 ct.ThrowIfCancellationRequested();
 
-                foreach (var v in videos) Videos.Add(v);
+                foreach (var v in page.Videos) Videos.Add(v);
+                _channelContinuation = page.Continuation;
+                HasMoreResults = !string.IsNullOrEmpty(_channelContinuation);
 
                 ResultCountText = $"{Videos.Count} video(s)";
                 StatusText = $"Channel: {ChannelName} — {Videos.Count} recent video(s)";
@@ -225,6 +266,9 @@ namespace OctoFetch.ViewModels
             IsChannelView = false;
             Videos.Clear();
             Channels.Clear();
+            _channelContinuation = null;
+            _activeChannelId = string.Empty;
+            HasMoreResults = false;
             StatusText = "Search for videos, channels, or paste a YouTube URL.";
             ResultCountText = string.Empty;
         }
@@ -268,16 +312,34 @@ namespace OctoFetch.ViewModels
 
         private static bool TryExtractChannelId(string input, out string channelId)
         {
+            // Accepts any youtube channel URL (channel/UCxxx, /@handle, /c/CustomName,
+            // /user/Username) regardless of scheme, www/m/music subdomain, or query
+            // string trailing the URL.
             channelId = string.Empty;
-            if (input.Contains("youtube.com/channel/") || input.Contains("youtube.com/c/") || input.Contains("youtube.com/@"))
+            if (string.IsNullOrWhiteSpace(input)) return false;
+            var raw = input.Trim();
+            var withScheme = raw.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                ? raw
+                : "https://" + raw;
+            if (!Uri.TryCreate(withScheme, UriKind.Absolute, out var uri)) return false;
+            var host = uri.Host.ToLowerInvariant();
+            if (!(host == "youtube.com" || host.EndsWith(".youtube.com", StringComparison.Ordinal)))
+                return false;
+
+            var segments = uri.AbsolutePath.Trim('/').Split('/');
+            if (segments.Length == 0) return false;
+            var first = segments[0];
+            if (first.StartsWith("@", StringComparison.Ordinal))
             {
-                var uri = new Uri(input.StartsWith("http") ? input : "https://" + input);
-                var segments = uri.AbsolutePath.TrimEnd('/').Split('/');
-                if (segments.Length >= 2)
-                {
-                    channelId = segments[^1];
-                    return true;
-                }
+                channelId = first;
+                return true;
+            }
+            if (segments.Length >= 2 && (first.Equals("channel", StringComparison.OrdinalIgnoreCase)
+                || first.Equals("c", StringComparison.OrdinalIgnoreCase)
+                || first.Equals("user", StringComparison.OrdinalIgnoreCase)))
+            {
+                channelId = segments[1];
+                return true;
             }
             return false;
         }

@@ -15,7 +15,7 @@ namespace OctoFetch.Services
     public interface IYouTubeSearchService
     {
         Task<YouTubeSearchResult> SearchAsync(string query, string? pageToken = null, CancellationToken ct = default);
-        Task<List<YouTubeVideoItem>> GetChannelVideosAsync(string channelId, CancellationToken ct = default);
+        Task<YouTubeChannelVideosResult> GetChannelVideosAsync(string channelId, string? continuation = null, CancellationToken ct = default);
         Task<YouTubeChannelItem?> GetChannelInfoAsync(string channelId, CancellationToken ct = default);
     }
 
@@ -112,56 +112,109 @@ namespace OctoFetch.Services
             return result;
         }
 
-        public async Task<List<YouTubeVideoItem>> GetChannelVideosAsync(string channelId, CancellationToken ct = default)
+        public async Task<YouTubeChannelVideosResult> GetChannelVideosAsync(
+            string channelId, string? continuation = null, CancellationToken ct = default)
         {
-            var videos = new List<YouTubeVideoItem>();
-            var browseId = await ResolveChannelBrowseIdAsync(channelId, ct).ConfigureAwait(false);
-            if (string.IsNullOrEmpty(browseId)) return videos;
+            var result = new YouTubeChannelVideosResult();
 
-            // params "EgZ2aWRlb3PyBgQKAjoA" selects the Videos tab (sorted by date).
-            var body = new JObject
+            JObject body;
+            string? browseId = null;
+            if (!string.IsNullOrEmpty(continuation))
             {
-                ["context"] = BuildContext(),
-                ["browseId"] = browseId,
-                ["params"] = "EgZ2aWRlb3PyBgQKAjoA",
-            };
+                // Subsequent pages — InnerTube returns the next batch when we re-POST
+                // /browse with the continuation token we received last time.
+                body = new JObject
+                {
+                    ["context"] = BuildContext(),
+                    ["continuation"] = continuation,
+                };
+            }
+            else
+            {
+                browseId = await ResolveChannelBrowseIdAsync(channelId, ct).ConfigureAwait(false);
+                if (string.IsNullOrEmpty(browseId)) return result;
+
+                // params "EgZ2aWRlb3PyBgQKAjoA" selects the Videos tab (sorted by date).
+                body = new JObject
+                {
+                    ["context"] = BuildContext(),
+                    ["browseId"] = browseId,
+                    ["params"] = "EgZ2aWRlb3PyBgQKAjoA",
+                };
+            }
 
             var json = await PostInnerTubeAsync("browse", body, ct).ConfigureAwait(false);
             var root = JObject.Parse(json);
 
-            // Walk to the Videos tab content. Path:
-            //   contents.twoColumnBrowseResultsRenderer.tabs[*].tabRenderer.content
-            //     .richGridRenderer.contents[].richItemRenderer.content.videoRenderer
-            //  (or .reelItemRenderer / .shortsLockupViewModel for shorts)
-            var tabs = root.SelectToken("contents.twoColumnBrowseResultsRenderer.tabs") as JArray;
-            if (tabs == null) return videos;
-
+            // Two layouts: the initial browse response embeds the grid under
+            //   contents.twoColumnBrowseResultsRenderer.tabs[*].tabRenderer.content.richGridRenderer.contents
+            // while continuation responses surface it via
+            //   onResponseReceivedActions[*].appendContinuationItemsAction.continuationItems
             JArray? gridContents = null;
-            foreach (var tab in tabs)
-            {
-                var content = tab.SelectToken("tabRenderer.content");
-                if (content == null) continue;
-                gridContents = content.SelectToken("richGridRenderer.contents") as JArray
-                    ?? content.SelectToken("sectionListRenderer.contents") as JArray;
-                if (gridContents != null) break;
-            }
-            if (gridContents == null) return videos;
+            string? nextContinuation = null;
 
-            foreach (var entry in gridContents)
+            if (!string.IsNullOrEmpty(continuation))
             {
-                // Newest layout: richItemRenderer wrapping a videoRenderer.
-                var inner = entry.SelectToken("richItemRenderer.content") ?? entry;
-                if (inner is JObject obj && obj["videoRenderer"] is JObject vr)
+                var actions = root["onResponseReceivedActions"] as JArray
+                    ?? root["onResponseReceivedCommands"] as JArray
+                    ?? root["onResponseReceivedEndpoints"] as JArray;
+                if (actions != null)
                 {
-                    var v = ParseVideoRenderer(vr);
-                    if (v != null)
+                    foreach (var act in actions)
                     {
-                        if (string.IsNullOrEmpty(v.ChannelId)) v.ChannelId = browseId;
-                        videos.Add(v);
+                        var items = act.SelectToken("appendContinuationItemsAction.continuationItems") as JArray
+                            ?? act.SelectToken("reloadContinuationItemsCommand.continuationItems") as JArray;
+                        if (items == null) continue;
+                        gridContents ??= new JArray();
+                        foreach (var it in items) gridContents.Add(it);
                     }
                 }
             }
-            return videos;
+            else
+            {
+                var tabs = root.SelectToken("contents.twoColumnBrowseResultsRenderer.tabs") as JArray;
+                if (tabs != null)
+                {
+                    foreach (var tab in tabs)
+                    {
+                        var content = tab.SelectToken("tabRenderer.content");
+                        if (content == null) continue;
+                        gridContents = content.SelectToken("richGridRenderer.contents") as JArray
+                            ?? content.SelectToken("sectionListRenderer.contents") as JArray;
+                        if (gridContents != null) break;
+                    }
+                }
+            }
+            if (gridContents == null) return result;
+
+            foreach (var entry in gridContents)
+            {
+                // Continuation slot — capture the token for the next page.
+                if (entry["continuationItemRenderer"] is JObject contItem)
+                {
+                    nextContinuation = contItem.SelectToken("continuationEndpoint.continuationCommand.token")?.ToString();
+                    continue;
+                }
+
+                // Newest layout wraps each grid cell in a richItemRenderer.
+                var inner = entry.SelectToken("richItemRenderer.content") ?? entry;
+                if (inner is not JObject obj) continue;
+
+                YouTubeVideoItem? parsed = null;
+                if (obj["videoRenderer"] is JObject vr) parsed = ParseVideoRenderer(vr);
+                else if (obj["reelItemRenderer"] is JObject reel) parsed = ParseReelItemRenderer(reel);
+                else if (obj["shortsLockupViewModel"] is JObject lockup) parsed = ParseShortsLockup(lockup);
+
+                if (parsed != null)
+                {
+                    if (string.IsNullOrEmpty(parsed.ChannelId) && !string.IsNullOrEmpty(browseId))
+                        parsed.ChannelId = browseId;
+                    result.Videos.Add(parsed);
+                }
+            }
+
+            result.Continuation = nextContinuation;
+            return result;
         }
 
         public async Task<YouTubeChannelItem?> GetChannelInfoAsync(string channelId, CancellationToken ct = default)
@@ -363,6 +416,65 @@ namespace OctoFetch.Services
             };
         }
 
+        private static YouTubeVideoItem? ParseReelItemRenderer(JObject rr)
+        {
+            // reelItemRenderer is the older shorts-in-grid renderer that the channel
+            // page still serves alongside videoRenderer entries.
+            var videoId = rr["videoId"]?.ToString();
+            if (string.IsNullOrEmpty(videoId)) return null;
+
+            var title = ExtractText(rr["headline"]);
+            var thumbs = rr.SelectToken("thumbnail.thumbnails") as JArray;
+            var thumb = thumbs != null ? PickBestThumbnail(thumbs) : $"https://i.ytimg.com/vi/{videoId}/hqdefault.jpg";
+
+            var viewsText = ExtractText(rr["viewCountText"]);
+            var views = ParseLooseViewCount(viewsText);
+
+            return new YouTubeVideoItem
+            {
+                VideoId = videoId,
+                Title = title,
+                ThumbnailUrl = NormalizeThumbnailUrl(thumb),
+                Views = views,
+                // Duration isn't exposed on shorts renderers; mark as a short so the
+                // "Shorts" filter still works (anything <= 180s is a Short).
+                DurationSeconds = 30,
+            };
+        }
+
+        private static YouTubeVideoItem? ParseShortsLockup(JObject lk)
+        {
+            // shortsLockupViewModel is the newer (post-2024) shorts entry on channel pages.
+            //   onTap.innertubeCommand.reelWatchEndpoint.videoId
+            //   overlayMetadata.primaryText.content     -> title
+            //   overlayMetadata.secondaryText.content   -> "1.2M views"
+            //   thumbnail.sources[]                     -> { url, width, height }
+            var videoId = lk.SelectToken("onTap.innertubeCommand.reelWatchEndpoint.videoId")?.ToString();
+            if (string.IsNullOrEmpty(videoId)) return null;
+
+            var title = lk.SelectToken("overlayMetadata.primaryText.content")?.ToString()
+                ?? lk.SelectToken("accessibilityText")?.ToString()
+                ?? string.Empty;
+
+            string thumb = string.Empty;
+            if (lk.SelectToken("thumbnail.sources") is JArray sources)
+                thumb = PickBestThumbnail(sources);
+            if (string.IsNullOrEmpty(thumb))
+                thumb = $"https://i.ytimg.com/vi/{videoId}/hqdefault.jpg";
+
+            var viewsStr = lk.SelectToken("overlayMetadata.secondaryText.content")?.ToString() ?? string.Empty;
+            var views = ParseLooseViewCount(viewsStr);
+
+            return new YouTubeVideoItem
+            {
+                VideoId = videoId,
+                Title = title,
+                ThumbnailUrl = NormalizeThumbnailUrl(thumb),
+                Views = views,
+                DurationSeconds = 30,
+            };
+        }
+
         private static YouTubeChannelItem? ParseChannelRenderer(JObject cr)
         {
             var channelId = cr["channelId"]?.ToString();
@@ -472,50 +584,74 @@ namespace OctoFetch.Services
         }
 
         /// <summary>
-        /// Parses both exact ("1,234,567 views") and abbreviated ("1.2M subscribers")
-        /// counts to a long. Returns 0 for unparseable inputs (e.g. "No views").
+        /// Parses any count text YouTube emits to a <see cref="long"/>. Handles
+        /// both exact ("1,234,567 views") and abbreviated ("1.2M subscribers")
+        /// forms. Returns 0 for unparseable inputs (e.g. "No views").
         /// </summary>
-        private static long ParseLooseViewCount(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text)) return 0;
-            // Try strict digits first.
-            var digits = new string(text.Where(c => char.IsDigit(c) || c == ',').ToArray()).Replace(",", "");
-            if (long.TryParse(digits, out var n) && n > 0) return n;
+        private static long ParseLooseViewCount(string text) => ParseAbbreviatedCount(text);
 
-            return ParseAbbreviatedCount(text);
-        }
-
+        /// <summary>
+        /// Parses count text. The previous implementation scanned the whole
+        /// trailing word for K/M/B/T characters with <c>Contains</c>, which
+        /// matched the 'B' in "SUBSCRIBERS" (and 'T' in "WATCHING") and
+        /// produced wildly inflated counts — a channel with 1,234 subscribers
+        /// was reported as 1.234B. We now only consider the character that
+        /// immediately follows the numeric run as a possible suffix.
+        /// </summary>
         private static long ParseAbbreviatedCount(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return 0;
-            var t = text.Trim();
-            // Extract the leading number (may include `.` or `,` as thousands sep).
-            var buf = new StringBuilder();
-            foreach (var c in t)
-            {
-                if (char.IsDigit(c) || c == '.' || c == ',') buf.Append(c == ',' ? '.' : c);
-                else break;
-            }
-            if (buf.Length == 0) return 0;
-            // Many locales use `,` as thousands; YouTube returns en-US so this is mostly safe.
-            // If the original string had only one comma and no dot, treat as thousands.
-            var raw = buf.ToString();
-            if (raw.Count(c => c == '.') > 1) raw = raw.Replace(".", "");
+            var t = text.TrimStart();
 
-            if (!double.TryParse(raw, System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out var num))
+            // 1) Walk the leading numeric run (digits + `.` + `,`).
+            int end = 0;
+            while (end < t.Length && (char.IsDigit(t[end]) || t[end] == '.' || t[end] == ','))
+                end++;
+            if (end == 0) return 0;
+            var numericPart = t.Substring(0, end);
+
+            // 2) Skip any whitespace, then read at most one K/M/B/T as the suffix.
+            int i = end;
+            while (i < t.Length && char.IsWhiteSpace(t[i])) i++;
+            char? suffix = null;
+            if (i < t.Length)
+            {
+                var ch = char.ToUpperInvariant(t[i]);
+                if (ch == 'K' || ch == 'M' || ch == 'B' || ch == 'T') suffix = ch;
+            }
+
+            if (!suffix.HasValue)
+            {
+                // No suffix → punctuation in the numeric part is thousands
+                // grouping (e.g. "1,234,567"); just keep the digits.
+                var digitsOnly = new string(numericPart.Where(char.IsDigit).ToArray());
+                if (digitsOnly.Length == 0) return 0;
+                return long.TryParse(digitsOnly, out var n) ? n : 0;
+            }
+
+            // With a suffix the punctuation is a decimal separator. Accept both
+            // "." (en-US) and "," (de-DE/fa-IR); keep only the *last* one as the
+            // actual decimal point and treat earlier ones as thousands sep.
+            var canonical = numericPart.Replace(',', '.');
+            var lastDot = canonical.LastIndexOf('.');
+            if (lastDot >= 0)
+            {
+                var intPart = canonical.Substring(0, lastDot).Replace(".", "");
+                canonical = intPart + "." + canonical.Substring(lastDot + 1);
+            }
+            if (!double.TryParse(canonical, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var value))
                 return 0;
 
-            // Detect K/M/B/T suffix.
-            var upper = t.ToUpperInvariant();
-            double multiplier = 1;
-            if (upper.Contains('B')) multiplier = 1_000_000_000d;
-            else if (upper.Contains('M')) multiplier = 1_000_000d;
-            else if (upper.Contains('K')) multiplier = 1_000d;
-            else if (upper.Contains('T')) multiplier = 1_000_000_000_000d;
-
-            // If there's no suffix and the comma-stripped value was huge, just use it directly.
-            return (long)(num * multiplier);
+            var multiplier = suffix switch
+            {
+                'K' => 1_000d,
+                'M' => 1_000_000d,
+                'B' => 1_000_000_000d,
+                'T' => 1_000_000_000_000d,
+                _ => 1d,
+            };
+            return (long)(value * multiplier);
         }
 
         /// <summary>
