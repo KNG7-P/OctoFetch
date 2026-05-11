@@ -589,8 +589,10 @@ namespace OctoFetch.Services
             // De-dupe the periodic status log: re-log only when the run's status,
             // percent, or label actually changes. Previously every poll cycle
             // re-emitted the same "In Progress (33%): ..." line which flooded
-            // the activity log.
-            WorkflowRunStatus? lastLoggedStatus = null;
+            // the activity log. We compare on the raw status string because
+            // Octokit wraps Status in StringEnum<WorkflowRunStatus> and the
+            // GitHub API can return values not yet in the local enum.
+            string? lastLoggedStatusStr = null;
             int lastLoggedPercent = -1;
             string lastLoggedLabel = string.Empty;
 
@@ -634,7 +636,8 @@ namespace OctoFetch.Services
                         return;
                     }
 
-                    var statusChanged = current.Status != lastLoggedStatus;
+                    var currentStatusStr = current.Status.StringValue ?? string.Empty;
+                    var statusChanged = !string.Equals(currentStatusStr, lastLoggedStatusStr, StringComparison.OrdinalIgnoreCase);
                     var progressChanged = current.Status == WorkflowRunStatus.InProgress
                         && (lastKnownPercent != lastLoggedPercent
                             || !string.Equals(lastKnownLabel, lastLoggedLabel, StringComparison.Ordinal));
@@ -647,7 +650,7 @@ namespace OctoFetch.Services
                                 : current.Status == WorkflowRunStatus.InProgress
                                     ? $"🎬 [{node.RepoName}] YouTube ({lastKnownPercent}%): {lastKnownLabel}"
                                     : $"🔄 [{node.RepoName}] Status: {current.Status}");
-                        lastLoggedStatus = current.Status;
+                        lastLoggedStatusStr = currentStatusStr;
                         lastLoggedPercent = lastKnownPercent;
                         lastLoggedLabel = lastKnownLabel;
                     }
@@ -775,8 +778,10 @@ namespace OctoFetch.Services
             // De-dupe the periodic status log: re-log only when the run's status,
             // percent, or label actually changes. Previously every poll cycle
             // re-emitted the same "In Progress (33%): ..." line which flooded
-            // the activity log.
-            WorkflowRunStatus? lastLoggedStatus = null;
+            // the activity log. We compare on the raw status string because
+            // Octokit wraps Status in StringEnum<WorkflowRunStatus> and the
+            // GitHub API can return values not yet in the local enum.
+            string? lastLoggedStatusStr = null;
             int lastLoggedPercent = -1;
             string lastLoggedLabel = string.Empty;
 
@@ -820,7 +825,8 @@ namespace OctoFetch.Services
                         return;
                     }
 
-                    var statusChanged = current.Status != lastLoggedStatus;
+                    var currentStatusStr = current.Status.StringValue ?? string.Empty;
+                    var statusChanged = !string.Equals(currentStatusStr, lastLoggedStatusStr, StringComparison.OrdinalIgnoreCase);
                     var progressChanged = current.Status == WorkflowRunStatus.InProgress
                         && (lastKnownPercent != lastLoggedPercent
                             || !string.Equals(lastKnownLabel, lastLoggedLabel, StringComparison.Ordinal));
@@ -833,7 +839,7 @@ namespace OctoFetch.Services
                                 : current.Status == WorkflowRunStatus.InProgress
                                     ? $"⚙️ [{node.RepoName}] In Progress ({lastKnownPercent}%): {lastKnownLabel}"
                                     : $"🔄 [{node.RepoName}] Status: {current.Status}");
-                        lastLoggedStatus = current.Status;
+                        lastLoggedStatusStr = currentStatusStr;
                         lastLoggedPercent = lastKnownPercent;
                         lastLoggedLabel = lastKnownLabel;
                     }
