@@ -1,4 +1,4 @@
-# OctoFetch-YouTube-Version: 3
+# OctoFetch-YouTube-Version: 4
 
 name: 'YouTube Download Engine'
 
@@ -229,7 +229,11 @@ jobs:
             slice=( "${ALL_FILES[@]:i:BATCH_SIZE}" )
             echo "Batch $batch_n: ${#slice[@]} file(s)"
 
-            git add -- "${slice[@]}"
+            # --sparse lets git stage paths outside the sparse-checkout cone.
+            # We sparse-checkout only .github above, but the downloads we just
+            # produced live under downloads/$FOLDER/ — those are new files
+            # (no blobs to fetch), so allowing them via --sparse is safe.
+            git add --sparse -- "${slice[@]}"
             if git diff --cached --quiet; then
               echo "  nothing staged for batch $batch_n, skipping."
               continue

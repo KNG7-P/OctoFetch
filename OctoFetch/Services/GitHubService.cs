@@ -27,7 +27,7 @@ namespace OctoFetch.Services
         private const string YouTubeWorkflowFileName = "youtube_downloader.yml";
         private const string YouTubeWorkflowPath = ".github/workflows/" + YouTubeWorkflowFileName;
         private const string YouTubeYamlVersionMarker = "# OctoFetch-YouTube-Version:";
-        private const int CurrentYouTubeYamlVersion = 3;
+        private const int CurrentYouTubeYamlVersion = 4;
 
         // Legacy yt-dlp engine workflow file. Removed; we clean it from nodes
         // that still have it lying around on init.
