@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using OctoFetch.ViewModels;
+using OctoFetch.Views.Dialogs;
 
 namespace OctoFetch.Views.Tabs
 {
@@ -15,21 +16,30 @@ namespace OctoFetch.Views.Tabs
 
         public void ClearNewToken() => PwdNewToken.Clear();
 
-        private void BtnBrowseDownloadFolder_Click(object sender, RoutedEventArgs e)
+        private void BtnOpenDownloadSettings_Click(object sender, RoutedEventArgs e)
         {
             if (DataContext is not MainViewModel vm) return;
 
-            var dlg = new Microsoft.Win32.OpenFolderDialog
+            var dlg = new DownloadSettingsDialog(vm.Settings)
             {
-                Title = "Select Oct-Download output folder",
-                Multiselect = false,
+                Owner = Window.GetWindow(this),
             };
-            if (!string.IsNullOrWhiteSpace(vm.Settings.DownloadFolderPath))
-                dlg.InitialDirectory = vm.Settings.DownloadFolderPath;
-
             if (dlg.ShowDialog() == true)
             {
-                vm.Settings.DownloadFolderPath = dlg.FolderName;
+                vm.SaveSettingsSilently();
+            }
+        }
+
+        private void BtnOpenYouTubeSettings_Click(object sender, RoutedEventArgs e)
+        {
+            if (DataContext is not MainViewModel vm) return;
+
+            var dlg = new YouTubeSettingsDialog(vm.Settings)
+            {
+                Owner = Window.GetWindow(this),
+            };
+            if (dlg.ShowDialog() == true)
+            {
                 vm.SaveSettingsSilently();
             }
         }

@@ -12,17 +12,51 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Margin="0,0,0,16">
-            <TextBlock Text="Settings" Style="{StaticResource PageTitle}"/>
-            <TextBlock Text="Each server is a free GitHub account that does the heavy lifting in parallel."
-                       Style="{StaticResource PageSubtitle}"/>
-        </StackPanel>
+        <Grid Grid.Row="0" Margin="0,0,0,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="Settings" Style="{StaticResource PageTitle}"/>
+                <TextBlock Text="Each server is a free GitHub account that does the heavy lifting in parallel."
+                           Style="{StaticResource PageSubtitle}"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button Style="{StaticResource MaterialDesignOutlinedButton}"
+                        BorderBrush="{StaticResource BorderBrushDefault}"
+                        Foreground="{StaticResource TextSecondary}"
+                        md:ButtonAssist.CornerRadius="10"
+                        Padding="14,6" Margin="0,0,8,0"
+                        Click="BtnOpenDownloadSettings_Click"
+                        ToolTip="Concurrent downloads and output folder">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="DownloadOutline" Width="14" Height="14"
+                                     Margin="0,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="Download settings" VerticalAlignment="Center"
+                                   FontSize="12.5" FontWeight="SemiBold"/>
+                    </StackPanel>
+                </Button>
+                <Button Style="{StaticResource MaterialDesignOutlinedButton}"
+                        BorderBrush="{StaticResource BorderBrushDefault}"
+                        Foreground="{StaticResource TextSecondary}"
+                        md:ButtonAssist.CornerRadius="10"
+                        Padding="14,6"
+                        Click="BtnOpenYouTubeSettings_Click"
+                        ToolTip="YouTube Data API v3 key">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="Youtube" Width="14" Height="14"
+                                     Margin="0,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="YouTube API" VerticalAlignment="Center"
+                                   FontSize="12.5" FontWeight="SemiBold"/>
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Grid>
 
         <md:Card Grid.Row="1" Background="{StaticResource BgCard}"
                  UniformCornerRadius="14" Padding="20,18" Margin="0,0,0,12"
@@ -65,89 +99,8 @@
             </StackPanel>
         </md:Card>
 
-        <!-- YouTube API Key -->
-        <md:Card Grid.Row="2" Background="{StaticResource BgCard}"
-                 UniformCornerRadius="14" Padding="20,14" Margin="0,0,0,12"
-                 md:ElevationAssist.Elevation="Dp0">
-            <StackPanel>
-                <TextBlock Text="YOUTUBE API" Style="{StaticResource SectionLabel}"/>
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBox Grid.Column="0"
-                             Style="{StaticResource MaterialDesignOutlinedTextBox}"
-                             md:HintAssist.Hint="YouTube Data API v3 Key"
-                             md:HintAssist.IsFloating="True"
-                             Text="{Binding Settings.YouTubeApiKey, UpdateSourceTrigger=PropertyChanged}"
-                             FontSize="12.5" Padding="12,10"/>
-                    <Button Grid.Column="1"
-                            Style="{StaticResource MaterialDesignOutlinedButton}"
-                            BorderBrush="{StaticResource BorderBrushDefault}"
-                            Foreground="{StaticResource TextSecondary}"
-                            md:ButtonAssist.CornerRadius="10"
-                            Padding="14,6" Margin="10,0,0,0"
-                            Command="{Binding NodeManagement.SaveSettingsCommand}"
-                            ToolTip="Save settings">
-                        <StackPanel Orientation="Horizontal">
-                            <md:PackIcon Kind="ContentSave" Width="14" Height="14"
-                                         Margin="0,0,4,0" VerticalAlignment="Center"/>
-                            <TextBlock Text="Save" VerticalAlignment="Center" FontSize="12"/>
-                        </StackPanel>
-                    </Button>
-                </Grid>
-            </StackPanel>
-        </md:Card>
-
-        <!-- Download Settings -->
-        <md:Card Grid.Row="3" Background="{StaticResource BgCard}"
-                 UniformCornerRadius="14" Padding="20,14" Margin="0,0,0,12"
-                 md:ElevationAssist.Elevation="Dp0">
-            <StackPanel>
-                <TextBlock Text="DOWNLOAD SETTINGS" Style="{StaticResource SectionLabel}"/>
-                <Grid Margin="0,8,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="Concurrent downloads:"
-                               Foreground="{StaticResource TextSecondary}"
-                               VerticalAlignment="Center" FontSize="12.5" Margin="0,0,10,0"/>
-                    <ComboBox Grid.Column="1" Width="80"
-                              Style="{StaticResource CompactComboBox}"
-                              SelectedItem="{Binding Settings.MaxConcurrentDownloads}"
-                              md:HintAssist.Hint="Max">
-                        <sys:Int32 xmlns:sys="clr-namespace:System;assembly=mscorlib">1</sys:Int32>
-                        <sys:Int32 xmlns:sys="clr-namespace:System;assembly=mscorlib">2</sys:Int32>
-                        <sys:Int32 xmlns:sys="clr-namespace:System;assembly=mscorlib">3</sys:Int32>
-                        <sys:Int32 xmlns:sys="clr-namespace:System;assembly=mscorlib">4</sys:Int32>
-                        <sys:Int32 xmlns:sys="clr-namespace:System;assembly=mscorlib">5</sys:Int32>
-                    </ComboBox>
-                    <TextBlock Grid.Column="2" Text="Output folder:"
-                               Foreground="{StaticResource TextSecondary}"
-                               VerticalAlignment="Center" FontSize="12.5" Margin="20,0,10,0"/>
-                    <StackPanel Grid.Column="3" Orientation="Horizontal">
-                        <TextBox Style="{StaticResource MaterialDesignOutlinedTextBox}"
-                                 md:HintAssist.Hint="Oct-Download path"
-                                 md:HintAssist.IsFloating="True"
-                                 Text="{Binding Settings.DownloadFolderPath, UpdateSourceTrigger=PropertyChanged}"
-                                 Width="250" FontSize="12" Padding="10,8"/>
-                        <Button Style="{StaticResource MaterialDesignIconButton}"
-                                Width="32" Height="32" Margin="6,0,0,0"
-                                ToolTip="Browse folder"
-                                Click="BtnBrowseDownloadFolder_Click">
-                            <md:PackIcon Kind="FolderSearchOutline" Width="16" Height="16"
-                                         Foreground="{StaticResource TextSecondary}"/>
-                        </Button>
-                    </StackPanel>
-                </Grid>
-            </StackPanel>
-        </md:Card>
-
-        <Grid Grid.Row="4">
+        <!-- YouTube API + Download settings moved to modal dialogs (see top-right buttons). -->
+        <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="380"/>
@@ -289,7 +242,7 @@
             </md:Card>
         </Grid>
 
-        <StackPanel Grid.Row="5" Orientation="Horizontal" Margin="0,12,0,0"
+        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,12,0,0"
                     HorizontalAlignment="Right"
                     DataContext="{Binding NodeManagement}">
             <Button Style="{StaticResource MaterialDesignOutlinedButton}"

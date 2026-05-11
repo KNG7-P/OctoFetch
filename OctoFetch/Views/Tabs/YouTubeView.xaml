@@ -5,6 +5,7 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:vm="clr-namespace:OctoFetch.ViewModels"
              xmlns:md="http://materialdesigninxaml.net/winfx/xaml/themes"
+             xmlns:conv="clr-namespace:OctoFetch.Converters"
              mc:Ignorable="d"
              d:DataContext="{d:DesignInstance Type=vm:YouTubeViewModel}">
 
@@ -84,9 +85,10 @@
             <StackPanel Orientation="Horizontal">
                 <Border Width="44" Height="44" CornerRadius="22" Margin="0,0,14,0"
                         Background="#FF1F1F2D">
-                    <Border CornerRadius="22">
+                    <Border CornerRadius="22"
+                            conv:ImageAsyncLoader.Url="{Binding ChannelAvatar}">
                         <Border.Background>
-                            <ImageBrush ImageSource="{Binding ChannelAvatar, Converter={StaticResource CachedImage}}" Stretch="UniformToFill"
+                            <ImageBrush Stretch="UniformToFill"
                                         RenderOptions.BitmapScalingMode="LowQuality"/>
                         </Border.Background>
                     </Border>
@@ -176,9 +178,10 @@
                                 <StackPanel Orientation="Horizontal">
                                     <Border Width="22" Height="22" CornerRadius="11" Margin="0,0,8,0"
                                             Background="#FF1F1F2D">
-                                        <Border CornerRadius="11">
+                                        <Border CornerRadius="11"
+                                                conv:ImageAsyncLoader.Url="{Binding ThumbnailUrl}">
                                             <Border.Background>
-                                                <ImageBrush ImageSource="{Binding ThumbnailUrl, Converter={StaticResource CachedImage}}" Stretch="UniformToFill"
+                                                <ImageBrush Stretch="UniformToFill"
                                                             RenderOptions.BitmapScalingMode="LowQuality"/>
                                             </Border.Background>
                                         </Border>
@@ -246,7 +249,8 @@
                                 <Border Grid.Column="0" CornerRadius="8" Height="101"
                                         Background="#FF0D0D14" Margin="0,0,14,0">
                                     <Grid>
-                                        <Image Source="{Binding ThumbnailUrl, Converter={StaticResource CachedImage}}" Stretch="UniformToFill"
+                                        <Image conv:ImageAsyncLoader.Url="{Binding ThumbnailUrl}"
+                                               Stretch="UniformToFill"
                                                RenderOptions.BitmapScalingMode="LowQuality"
                                                RenderOptions.CachingHint="Cache"/>
                                         <!-- Duration badge -->

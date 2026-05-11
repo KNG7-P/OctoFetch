@@ -208,7 +208,7 @@ namespace OctoFetch.ViewModels
             // Root  = "<configured>/OctoFetch"  (always normalized)
             var rootDir = GetOutputDirectory();
             var tempRoot = Path.Combine(rootDir, ".temp");
-            Directory.CreateDirectory(tempRoot);
+            EnsureHiddenDirectory(tempRoot);
             var tempDir = Path.Combine(tempRoot, item.Id);
             Directory.CreateDirectory(tempDir);
 
@@ -567,6 +567,10 @@ namespace OctoFetch.ViewModels
             {
                 var tempRoot = Path.Combine(GetOutputDirectory(), ".temp");
                 if (!Directory.Exists(tempRoot)) return;
+
+                // Make sure the leftover temp folder is hidden even on pre-existing installs.
+                EnsureHiddenDirectory(tempRoot);
+
                 foreach (var dir in Directory.EnumerateDirectories(tempRoot))
                 {
                     try { Directory.Delete(dir, true); } catch { /* best-effort */ }
@@ -575,6 +579,28 @@ namespace OctoFetch.ViewModels
             catch (Exception ex)
             {
                 _logger.LogException(LogChannel.Downloader, "Failed to sweep stale temp", ex);
+            }
+        }
+
+        /// <summary>
+        /// Creates the working temp directory and marks it Hidden+System so the
+        /// user doesn't see a stray ".temp" folder sitting in their downloads.
+        /// Windows hides folders matching either attribute from Explorer's
+        /// default view; on non-Windows the attribute call is a no-op.
+        /// </summary>
+        private static void EnsureHiddenDirectory(string path)
+        {
+            try
+            {
+                Directory.CreateDirectory(path);
+                var attrs = File.GetAttributes(path);
+                var desired = attrs | FileAttributes.Hidden | FileAttributes.System;
+                if (attrs != desired) File.SetAttributes(path, desired);
+            }
+            catch
+            {
+                // Best-effort: if attribute setting fails (permissions, FS doesn't
+                // support hidden flag, etc.) we still want downloads to proceed.
             }
         }
 
