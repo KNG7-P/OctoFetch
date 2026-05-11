@@ -72,11 +72,7 @@ namespace OctoFetch
 
             services.AddSingleton<IToastService, ToastService>();
 
-            services.AddSingleton<IYouTubeSearchService>(sp =>
-            {
-                var settings = sp.GetRequiredService<AppSettings>();
-                return new YouTubeSearchService(() => settings.YouTubeApiKeys);
-            });
+            services.AddSingleton<IYouTubeSearchService, YouTubeSearchService>();
 
             services.AddSingleton<IGitHubService>(sp =>
             {

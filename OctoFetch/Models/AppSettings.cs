@@ -74,21 +74,10 @@ namespace OctoFetch.Models
             set => SetProperty(ref _enableToastNotifications, value);
         }
 
-        // Legacy single-key field kept so old encrypted settings still deserialise.
-        // The runtime always reads <see cref="YouTubeApiKeys"/>; on first load any
-        // legacy value gets folded into the list (see SettingsService.MigrateLegacyDefaults).
-        private string _youTubeApiKey = string.Empty;
-        public string YouTubeApiKey
-        {
-            get => _youTubeApiKey;
-            set => SetProperty(ref _youTubeApiKey, value);
-        }
-
-        /// <summary>
-        /// All YouTube Data API v3 keys the user has supplied. Search load is
-        /// round-robin'd across them, and a key returning quotaExceeded is
-        /// suspended for the remainder of the session.
-        /// </summary>
+        // Legacy YouTube Data API v3 fields. Retained only so old encrypted
+        // settings files still deserialise; the runtime now searches via the
+        // InnerTube endpoint and never reads these.
+        public string YouTubeApiKey { get; set; } = string.Empty;
         public List<string> YouTubeApiKeys { get; set; } = new();
 
         // Download manager settings

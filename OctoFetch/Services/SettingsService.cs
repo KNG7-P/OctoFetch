@@ -90,15 +90,10 @@ namespace OctoFetch.Services
             // longer intervals can re-set via the JSON file later.
             if (s.PollIntervalSeconds >= 8) s.PollIntervalSeconds = 3;
 
-            // Fold the legacy single-key field into the list.
-            if (s.YouTubeApiKeys == null) s.YouTubeApiKeys = new System.Collections.Generic.List<string>();
-            if (!string.IsNullOrWhiteSpace(s.YouTubeApiKey) &&
-                !s.YouTubeApiKeys.Contains(s.YouTubeApiKey))
-            {
-                s.YouTubeApiKeys.Add(s.YouTubeApiKey);
-            }
-            // Clear the legacy slot so the list is authoritative going forward.
+            // YouTube search no longer uses the Data API; clear any stale
+            // keys so they don't sit around in the settings file forever.
             s.YouTubeApiKey = string.Empty;
+            s.YouTubeApiKeys ??= new System.Collections.Generic.List<string>();
         }
 
         public void Save(AppSettings settings)

@@ -30,18 +30,5 @@ namespace OctoFetch.Views.Tabs
             }
         }
 
-        private void BtnOpenYouTubeSettings_Click(object sender, RoutedEventArgs e)
-        {
-            if (DataContext is not MainViewModel vm) return;
-
-            var dlg = new YouTubeSettingsDialog(vm.Settings)
-            {
-                Owner = Window.GetWindow(this),
-            };
-            if (dlg.ShowDialog() == true)
-            {
-                vm.SaveSettingsSilently();
-            }
-        }
     }
 }
