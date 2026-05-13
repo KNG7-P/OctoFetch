@@ -15,9 +15,6 @@
     <Border CornerRadius="14" Background="{StaticResource BgCard}"
             BorderBrush="{StaticResource BorderBrushDefault}" BorderThickness="1"
             Padding="22,18" MinWidth="420">
-        <Border.Effect>
-            <DropShadowEffect Color="Black" BlurRadius="22" ShadowDepth="6" Opacity="0.55"/>
-        </Border.Effect>
         <StackPanel>
             <Grid Margin="0,0,0,12">
                 <Grid.ColumnDefinitions>

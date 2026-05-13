@@ -8,246 +8,961 @@
              mc:Ignorable="d"
              d:DataContext="{d:DesignInstance Type=vm:FileManagerViewModel}">
 
+    <UserControl.Resources>
+        <Style x:Key="SourceTabPill" TargetType="ToggleButton">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="14,7"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="FontSize" Value="12.5"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Bd" CornerRadius="10"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FF1A1A28"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FF1F2230"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentCyanBrush}"/>
+                                <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Resources>
+
     <Grid>
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Grid Grid.Row="0" Margin="0,0,0,16">
+        <Grid Grid.Row="0" Margin="0,0,0,12">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0">
                 <TextBlock Text="My files" Style="{StaticResource PageTitle}"/>
-                <TextBlock Text="Everything you've downloaded — across every connected server."
+                <TextBlock Text="Everything you've downloaded or uploaded — across GitHub and Google Drive."
                            Style="{StaticResource PageSubtitle}"/>
             </StackPanel>
-            <Button Grid.Column="1" Style="{StaticResource MaterialDesignFloatingActionMiniButton}"
-                    ToolTip="Refresh"
-                    Background="{StaticResource AccentGradient}"
-                    BorderBrush="{StaticResource AccentGradient}"
-                    IsEnabled="{Binding IsRefreshing, Converter={StaticResource InverseBool}}"
-                    Command="{Binding RefreshCommand}">
-                <md:PackIcon Kind="Refresh" Width="18" Height="18" Foreground="White"/>
-            </Button>
-        </Grid>
-
-        <!-- Toolbar -->
-        <md:Card Grid.Row="1" Background="{StaticResource BgCard}"
-                 UniformCornerRadius="12" Padding="14,10" Margin="0,0,0,10"
-                 md:ElevationAssist.Elevation="Dp1">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="FILTER" Style="{StaticResource SectionLabel}"
-                               VerticalAlignment="Center" Margin="0,0,10,0"/>
-                    <ComboBox Width="150"
-                              Style="{StaticResource CompactComboBox}"
-                              md:HintAssist.Hint="Category"
-                              ItemsSource="{Binding AvailableTags}"
-                              SelectedItem="{Binding FilterTag}"/>
-                </StackPanel>
-                <TextBlock Grid.Column="1" Text="{Binding CurrentPathLabel}"
-                           Foreground="{StaticResource TextSecondary}"
-                           VerticalAlignment="Center"
-                           FontSize="12" Margin="14,0,14,0"
-                           TextTrimming="CharacterEllipsis"/>
-                <Button Grid.Column="2" Style="{StaticResource MaterialDesignOutlinedButton}"
-                        BorderBrush="{StaticResource BorderBrushDefault}"
-                        Foreground="{StaticResource TextSecondary}"
-                        md:ButtonAssist.CornerRadius="10"
-                        Padding="12,5"
-                        Command="{Binding GoBackCommand}">
-                    <StackPanel Orientation="Horizontal">
-                        <md:PackIcon Kind="ArrowLeft" Width="14" Height="14"
-                                     Margin="0,0,6,0" VerticalAlignment="Center"/>
-                        <TextBlock Text="Up one level" VerticalAlignment="Center" FontSize="12"/>
-                    </StackPanel>
+            
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <Button Style="{StaticResource MaterialDesignFloatingActionMiniButton}"
+                        Background="{StaticResource AccentGradient}"
+                        BorderBrush="{StaticResource AccentGradient}"
+                        IsEnabled="{Binding IsRefreshing, Converter={StaticResource InverseBool}}"
+                        Command="{Binding RefreshCommand}"
+                        Visibility="{Binding IsGitHubTabActive, Converter={StaticResource BoolToVisibility}}"
+                        ToolTip="Refresh GitHub files">
+                    <md:PackIcon Kind="Refresh" Width="18" Height="18" Foreground="White"/>
                 </Button>
-            </Grid>
-        </md:Card>
-
-        <!-- File list -->
-        <Grid Grid.Row="2">
-            <md:Card Background="{StaticResource BgCard}"
-                 UniformCornerRadius="14" Padding="6"
-                 md:ElevationAssist.Elevation="Dp1">
-                <ListView x:Name="ListViewFilesGithub"
-                      Background="Transparent"
-                      BorderThickness="0"
-                      ItemsSource="{Binding FilteredItems}"
-                      MouseDoubleClick="ListViewFiles_MouseDoubleClick"
-                      SelectionMode="Extended">
-                    <ListView.ItemContainerStyle>
-                        <Style TargetType="ListViewItem">
-                            <Setter Property="Background" Value="Transparent"/>
-                            <Setter Property="BorderThickness" Value="0"/>
-                            <Setter Property="Padding" Value="0"/>
-                            <Setter Property="Margin" Value="0,2"/>
-                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                            <Setter Property="Template">
-                                <Setter.Value>
-                                    <ControlTemplate TargetType="ListViewItem">
-                                        <Border x:Name="Bd" CornerRadius="10"
-                                            Background="#FF14141E"
-                                            BorderBrush="#FF1F1F2C" BorderThickness="1"
-                                            Padding="14,10">
-                                            <ContentPresenter/>
-                                        </Border>
-                                        <ControlTemplate.Triggers>
-                                            <Trigger Property="IsMouseOver" Value="True">
-                                                <Setter TargetName="Bd" Property="BorderBrush"
-                                                    Value="{StaticResource BorderBrushHover}"/>
-                                                <Setter TargetName="Bd" Property="Background"
-                                                    Value="#FF1A1A28"/>
-                                            </Trigger>
-                                            <Trigger Property="IsSelected" Value="True">
-                                                <Setter TargetName="Bd" Property="BorderBrush"
-                                                    Value="{StaticResource AccentCyanBrush}"/>
-                                                <Setter TargetName="Bd" Property="Background"
-                                                    Value="#FF1F2230"/>
-                                            </Trigger>
-                                        </ControlTemplate.Triggers>
-                                    </ControlTemplate>
-                                </Setter.Value>
-                            </Setter>
-                        </Style>
-                    </ListView.ItemContainerStyle>
-                    <ListView.ItemTemplate>
-                        <DataTemplate>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <Border Grid.Column="0" Width="36" Height="36"
-                                    Background="#FF1F1F2D" CornerRadius="9"
-                                    Margin="0,0,12,0">
-                                    <md:PackIcon Width="18" Height="18"
-                                             Foreground="{StaticResource AccentCyanBrush}"
-                                             HorizontalAlignment="Center" VerticalAlignment="Center">
-                                        <md:PackIcon.Style>
-                                            <Style TargetType="md:PackIcon">
-                                                <Setter Property="Kind" Value="FileOutline"/>
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding IsFolder}" Value="True">
-                                                        <Setter Property="Kind" Value="FolderOutline"/>
-                                                        <Setter Property="Foreground" Value="{StaticResource AccentPurpleBrush}"/>
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </md:PackIcon.Style>
-                                    </md:PackIcon>
-                                </Border>
-                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                    <TextBlock Text="{Binding Name}"
-                                           Foreground="{StaticResource TextPrimary}"
-                                           FontSize="13" FontWeight="SemiBold"
-                                           TextTrimming="CharacterEllipsis"/>
-                                    <TextBlock Text="{Binding SubText}"
-                                           Foreground="{StaticResource TextMuted}"
-                                           FontSize="11" Margin="0,1,0,0"/>
-                                </StackPanel>
-                                <Border Grid.Column="2"
-                                    Background="#FF20202E" CornerRadius="6"
-                                    Padding="8,3" VerticalAlignment="Center">
-                                    <TextBlock Text="{Binding Tag}"
-                                           Foreground="{StaticResource TextSecondary}"
-                                           FontSize="10.5" FontWeight="SemiBold"/>
-                                </Border>
-                            </Grid>
-                        </DataTemplate>
-                    </ListView.ItemTemplate>
-                </ListView>
-            </md:Card>
-
-            <!-- Loader overlay shown during refresh / delete / rename -->
-            <Border Background="#CC0F0F18"
-                CornerRadius="14"
-                Visibility="{Binding IsRefreshing, Converter={StaticResource BoolToVisibility}}">
-                <StackPanel Orientation="Vertical"
-                        HorizontalAlignment="Center"
-                        VerticalAlignment="Center">
-                    <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
-                             Foreground="{StaticResource AccentCyanBrush}"
-                             Width="44" Height="44"
-                             IsIndeterminate="True"
-                             Value="0"/>
-                    <TextBlock Text="{Binding BusyMessage}"
-                           Foreground="{StaticResource TextPrimary}"
-                           FontSize="13"
-                           FontWeight="SemiBold"
-                           HorizontalAlignment="Center"
-                           Margin="0,12,0,0"/>
-                    <TextBlock Text="Talking to GitHub — this can take a few seconds."
-                           Foreground="{StaticResource TextMuted}"
-                           FontSize="11"
-                           HorizontalAlignment="Center"
-                           Margin="0,2,0,0"/>
-                </StackPanel>
-            </Border>
+                <Button Style="{StaticResource MaterialDesignFloatingActionMiniButton}"
+                        Background="{StaticResource AccentGradient}"
+                        BorderBrush="{StaticResource AccentGradient}"
+                        IsEnabled="{Binding IsDriveRefreshing, Converter={StaticResource InverseBool}}"
+                        Command="{Binding RefreshDriveCommand}"
+                        Visibility="{Binding IsDriveTabActive, Converter={StaticResource BoolToVisibility}}"
+                        ToolTip="Refresh Drive files">
+                    <md:PackIcon Kind="Refresh" Width="18" Height="18" Foreground="White"/>
+                </Button>
+                <Button Style="{StaticResource MaterialDesignFloatingActionMiniButton}"
+                        Background="{StaticResource AccentGradient}"
+                        BorderBrush="{StaticResource AccentGradient}"
+                        IsEnabled="{Binding IsReleasesRefreshing, Converter={StaticResource InverseBool}}"
+                        Command="{Binding RefreshReleasesCommand}"
+                        Visibility="{Binding IsReleasesTabActive, Converter={StaticResource BoolToVisibility}}"
+                        ToolTip="Refresh release assets">
+                    <md:PackIcon Kind="Refresh" Width="18" Height="18" Foreground="White"/>
+                </Button>
+            </StackPanel>
         </Grid>
 
-        <!-- Action bar -->
-        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,12,0,0">
-            <Button Style="{StaticResource MaterialDesignOutlinedButton}"
-                    BorderBrush="{StaticResource AccentCyanBrush}"
-                    Foreground="{StaticResource AccentCyanBrush}"
-                    md:ButtonAssist.CornerRadius="10"
-                    Padding="14,6" Margin="0,0,8,0"
-                    Command="{Binding OpenFolderCommand}"
-                    CommandParameter="{Binding ElementName=ListViewFilesGithub, Path=SelectedItem}">
-                <StackPanel Orientation="Horizontal">
-                    <md:PackIcon Kind="FolderOpenOutline" Width="14" Height="14"
-                                 Margin="0,0,6,0" VerticalAlignment="Center"/>
-                    <TextBlock Text="Open" VerticalAlignment="Center" FontSize="12.5"/>
+        <!-- Source tabs: GitHub / Drive -->
+        <Border Grid.Row="1" Background="{StaticResource BgCard}"
+                CornerRadius="14" Padding="6" Margin="0,0,0,12"
+                BorderBrush="{StaticResource BorderBrushDefault}" BorderThickness="1">
+            <StackPanel Orientation="Horizontal">
+                <ToggleButton Style="{StaticResource SourceTabPill}"
+                              IsChecked="{Binding IsGitHubTabActive, Mode=TwoWay}"
+                              Margin="0,0,4,0">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="Github" Width="15" Height="15"
+                                     VerticalAlignment="Center" Margin="0,0,7,0"/>
+                        <TextBlock Text="GitHub files" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </ToggleButton>
+                <ToggleButton Style="{StaticResource SourceTabPill}"
+                              IsChecked="{Binding IsDriveTabActive, Mode=TwoWay}"
+                              Margin="0,0,4,0">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="GoogleDrive" Width="15" Height="15"
+                                     Foreground="#FF3B82F6"
+                                     VerticalAlignment="Center" Margin="0,0,7,0"/>
+                        <TextBlock Text="Drive files" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </ToggleButton>
+                <ToggleButton Style="{StaticResource SourceTabPill}"
+                              IsChecked="{Binding IsReleasesTabActive, Mode=TwoWay}">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="Tag" Width="15" Height="15"
+                                     Foreground="#FFF59E0B"
+                                     VerticalAlignment="Center" Margin="0,0,7,0"/>
+                        <TextBlock Text="Releases" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </ToggleButton>
+            </StackPanel>
+        </Border>
+
+        <!-- ================== GITHUB TAB ================== -->
+        <Grid Grid.Row="2" Grid.RowSpan="3"
+              Visibility="{Binding IsGitHubTabActive, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                
+                <md:Card Grid.Row="0" Background="{StaticResource BgCard}"
+                         UniformCornerRadius="12" Padding="14,10" Margin="0,0,0,10"
+                         md:ElevationAssist.Elevation="Dp0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <ComboBox Grid.Column="0" Width="150"
+                                  Style="{StaticResource CompactComboBox}"
+                                  md:HintAssist.Hint="Category"
+                                  ItemsSource="{Binding AvailableTags}"
+                                  SelectedItem="{Binding FilterTag}"
+                                  VerticalAlignment="Center"/>
+                        <TextBox Grid.Column="1"
+                                 Style="{StaticResource MaterialDesignOutlinedTextBox}"
+                                 md:HintAssist.Hint="Search by name"
+                                 md:TextFieldAssist.HasClearButton="True"
+                                 Margin="14,0,14,0"
+                                 FontSize="12"
+                                 Padding="10,4"
+                                 Height="32"
+                                 VerticalAlignment="Center"
+                                 Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"/>
+                        <Button Grid.Column="2" Style="{StaticResource MaterialDesignIconButton}"
+                                Foreground="{StaticResource TextSecondary}"
+                                Width="32" Height="32" Padding="0"
+                                ToolTip="Up one level"
+                                Visibility="{Binding IsBackVisible, Converter={StaticResource BoolToVisibility}}"
+                                Command="{Binding GoBackCommand}">
+                            <md:PackIcon Kind="ArrowUp" Width="16" Height="16"/>
+                        </Button>
+                    </Grid>
+                </md:Card>
+
+                <!-- File list -->
+                <Grid Grid.Row="1">
+                    <md:Card Background="{StaticResource BgCard}"
+                         UniformCornerRadius="14" Padding="6"
+                         md:ElevationAssist.Elevation="Dp0">
+                        <ListView x:Name="ListViewFilesGithub"
+                              Background="Transparent"
+                              BorderThickness="0"
+                              ItemsSource="{Binding FilteredItems}"
+                              MouseDoubleClick="ListViewFiles_MouseDoubleClick"
+                              SelectionMode="Extended"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
+                              VirtualizingPanel.ScrollUnit="Pixel"
+                              ScrollViewer.PanningMode="VerticalOnly"
+                              ScrollViewer.IsDeferredScrollingEnabled="False"
+                              ScrollViewer.CanContentScroll="True">
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="BorderThickness" Value="0"/>
+                                    <Setter Property="Padding" Value="0"/>
+                                    <Setter Property="Margin" Value="0,2"/>
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ListViewItem">
+                                                <Border x:Name="Bd" CornerRadius="10"
+                                                    Background="#FF14141E"
+                                                    BorderBrush="#FF1F1F2C" BorderThickness="1"
+                                                    Padding="14,10">
+                                                    <ContentPresenter/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="Bd" Property="BorderBrush"
+                                                            Value="{StaticResource BorderBrushHover}"/>
+                                                        <Setter TargetName="Bd" Property="Background"
+                                                            Value="#FF1A1A28"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsSelected" Value="True">
+                                                        <Setter TargetName="Bd" Property="BorderBrush"
+                                                            Value="{StaticResource AccentCyanBrush}"/>
+                                                        <Setter TargetName="Bd" Property="Background"
+                                                            Value="#FF1F2230"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Border Grid.Column="0" Width="36" Height="36"
+                                            Background="#FF1F1F2D" CornerRadius="9"
+                                            Margin="0,0,12,0">
+                                            <md:PackIcon Width="18" Height="18"
+                                                     Foreground="{StaticResource AccentCyanBrush}"
+                                                     HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                <md:PackIcon.Style>
+                                                    <Style TargetType="md:PackIcon">
+                                                        <Setter Property="Kind" Value="FileOutline"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsFolder}" Value="True">
+                                                                <Setter Property="Kind" Value="FolderOutline"/>
+                                                                <Setter Property="Foreground" Value="{StaticResource AccentPurpleBrush}"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </md:PackIcon.Style>
+                                            </md:PackIcon>
+                                        </Border>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Name}"
+                                                   Foreground="{StaticResource TextPrimary}"
+                                                   FontSize="13" FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="{Binding SubText}"
+                                                   Foreground="{StaticResource TextMuted}"
+                                                   FontSize="11" Margin="0,1,0,0"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                            <Border Background="#FF352D00" CornerRadius="6"
+                                                    Padding="6,3" Margin="0,0,6,0"
+                                                    VerticalAlignment="Center"
+                                                    Visibility="{Binding IsNew, Converter={StaticResource BoolToVisibility}}">
+                                                <StackPanel Orientation="Horizontal">
+                                                    <md:PackIcon Kind="StarFourPoints" Width="11" Height="11"
+                                                                 Foreground="#FFFBBF24" VerticalAlignment="Center"
+                                                                 Margin="0,0,4,0"/>
+                                                    <TextBlock Text="NEW" Foreground="#FFFBBF24"
+                                                               FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                            </Border>
+                                            <Border Background="#FF20202E" CornerRadius="6"
+                                                    Padding="8,2" Margin="0,0,6,0"
+                                                    Height="22"
+                                                    VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding Tag}"
+                                                       Foreground="{StaticResource TextSecondary}"
+                                                       FontSize="10.5" FontWeight="SemiBold"
+                                                       LineHeight="14" LineStackingStrategy="BlockLineHeight"
+                                                       TextAlignment="Center"
+                                                       VerticalAlignment="Center"/>
+                                            </Border>
+                                            <Button Style="{StaticResource MaterialDesignIconButton}"
+                                                    Width="30" Height="30"
+                                                    ToolTip="Download folder"
+                                                    Visibility="{Binding IsFolder, Converter={StaticResource BoolToVisibility}}"
+                                                    Command="{Binding DataContext.DownloadFolderCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                    CommandParameter="{Binding}">
+                                                <md:PackIcon Kind="Download" Width="16" Height="16"
+                                                             Foreground="{StaticResource AccentCyanBrush}"/>
+                                            </Button>
+                                        </StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </md:Card>
+
+                    <!-- Loader overlay shown during refresh / delete / rename -->
+                    <Border Background="#CC0F0F18"
+                        CornerRadius="14"
+                        Visibility="{Binding IsRefreshing, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel Orientation="Vertical"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center">
+                            <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
+                                         IsIndeterminate="True"
+                                         Foreground="{StaticResource AccentCyanBrush}"
+                                         Width="36" Height="36"
+                                         HorizontalAlignment="Center"/>
+                            <TextBlock Text="{Binding BusyMessage}"
+                                   Foreground="{StaticResource TextPrimary}"
+                                   FontSize="13"
+                                   FontWeight="SemiBold"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,12,0,0"/>
+                            <TextBlock Text="Talking to GitHub — this can take a few seconds."
+                                   Foreground="{StaticResource TextMuted}"
+                                   FontSize="11"
+                                   HorizontalAlignment="Center"
+                                   Margin="0,2,0,0"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <!-- Action bar -->
+                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
+                    <Button Style="{StaticResource MaterialDesignOutlinedButton}"
+                            BorderBrush="{StaticResource AccentCyanBrush}"
+                            Foreground="{StaticResource AccentCyanBrush}"
+                            md:ButtonAssist.CornerRadius="10"
+                            Padding="14,6" Margin="0,0,8,0"
+                            Command="{Binding OpenFolderCommand}"
+                            CommandParameter="{Binding ElementName=ListViewFilesGithub, Path=SelectedItem}">
+                        <StackPanel Orientation="Horizontal">
+                            <md:PackIcon Kind="FolderOpenOutline" Width="14" Height="14"
+                                         Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Open" VerticalAlignment="Center" FontSize="12.5"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource MaterialDesignOutlinedButton}"
+                            BorderBrush="{StaticResource AccentPurpleBrush}"
+                            Foreground="{StaticResource AccentPurpleBrush}"
+                            md:ButtonAssist.CornerRadius="10"
+                            Padding="14,6" Margin="0,0,8,0"
+                            Command="{Binding CopySelectedCommand}">
+                        <StackPanel Orientation="Horizontal">
+                            <md:PackIcon Kind="LinkVariant" Width="14" Height="14"
+                                         Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Copy links" VerticalAlignment="Center" FontSize="12.5"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource MaterialDesignOutlinedButton}"
+                            BorderBrush="{StaticResource WarningBrush}"
+                            Foreground="{StaticResource WarningBrush}"
+                            md:ButtonAssist.CornerRadius="10"
+                            Padding="14,6" Margin="0,0,8,0"
+                            Command="{Binding RenameFolderCommand}">
+                        <StackPanel Orientation="Horizontal">
+                            <md:PackIcon Kind="RenameBox" Width="14" Height="14"
+                                         Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Rename folder" VerticalAlignment="Center" FontSize="12.5"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource MaterialDesignOutlinedButton}"
+                            BorderBrush="{StaticResource DangerBrush}"
+                            Foreground="{StaticResource DangerBrush}"
+                            md:ButtonAssist.CornerRadius="10"
+                            Padding="14,6"
+                            Command="{Binding DeleteSelectedCommand}">
+                        <StackPanel Orientation="Horizontal">
+                            <md:PackIcon Kind="TrashCanOutline" Width="14" Height="14"
+                                         Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Delete" VerticalAlignment="Center" FontSize="12.5"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
-            </Button>
-            <Button Style="{StaticResource MaterialDesignOutlinedButton}"
-                    BorderBrush="{StaticResource AccentPurpleBrush}"
-                    Foreground="{StaticResource AccentPurpleBrush}"
-                    md:ButtonAssist.CornerRadius="10"
-                    Padding="14,6" Margin="0,0,8,0"
-                    Command="{Binding CopySelectedCommand}">
-                <StackPanel Orientation="Horizontal">
-                    <md:PackIcon Kind="LinkVariant" Width="14" Height="14"
-                                 Margin="0,0,6,0" VerticalAlignment="Center"/>
-                    <TextBlock Text="Copy links" VerticalAlignment="Center" FontSize="12.5"/>
+            </Grid>
+        </Grid>
+
+        <!-- ================== DRIVE TAB ================== -->
+        <Grid Grid.Row="2" Grid.RowSpan="3"
+              Visibility="{Binding IsDriveTabActive, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <md:Card Grid.Row="0" Background="{StaticResource BgCard}"
+                         UniformCornerRadius="12" Padding="14,10" Margin="0,0,0,10"
+                         md:ElevationAssist.Elevation="Dp0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <ComboBox Grid.Column="0" Width="150"
+                                  Style="{StaticResource CompactComboBox}"
+                                  md:HintAssist.Hint="Folder"
+                                  ItemsSource="{Binding DriveCategories}"
+                                  SelectedItem="{Binding DriveFilterCategory}"
+                                  VerticalAlignment="Center"/>
+                        <TextBox Grid.Column="1"
+                                 Style="{StaticResource MaterialDesignOutlinedTextBox}"
+                                 md:HintAssist.Hint="Search by file name"
+                                 md:TextFieldAssist.HasClearButton="True"
+                                 Margin="14,0,0,0"
+                                 FontSize="12"
+                                 Padding="10,4"
+                                 Height="32"
+                                 VerticalAlignment="Center"
+                                 Text="{Binding DriveSearchText, UpdateSourceTrigger=PropertyChanged}"/>
+                    </Grid>
+                </md:Card>
+
+                <!-- Drive list -->
+                <Grid Grid.Row="1">
+                    <md:Card Background="{StaticResource BgCard}"
+                             UniformCornerRadius="14" Padding="6"
+                             md:ElevationAssist.Elevation="Dp0">
+                        <ListView x:Name="ListViewFilesDrive"
+                                  Background="Transparent"
+                                  BorderThickness="0"
+                                  ItemsSource="{Binding FilteredDriveItems}"
+                                  MouseDoubleClick="ListViewDriveFiles_MouseDoubleClick"
+                                  SelectionMode="Extended"
+                                  VirtualizingPanel.IsVirtualizing="True"
+                                  VirtualizingPanel.VirtualizationMode="Recycling"
+                                  VirtualizingPanel.ScrollUnit="Pixel"
+                                  ScrollViewer.PanningMode="VerticalOnly"
+                                  ScrollViewer.IsDeferredScrollingEnabled="False"
+                                  ScrollViewer.CanContentScroll="True">
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="BorderThickness" Value="0"/>
+                                    <Setter Property="Padding" Value="0"/>
+                                    <Setter Property="Margin" Value="0,2"/>
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ListViewItem">
+                                                <Border x:Name="Bd" CornerRadius="10"
+                                                        Background="#FF14141E"
+                                                        BorderBrush="#FF1F1F2C" BorderThickness="1"
+                                                        Padding="14,10">
+                                                    <ContentPresenter/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="Bd" Property="BorderBrush"
+                                                                Value="#FF3B82F6"/>
+                                                        <Setter TargetName="Bd" Property="Background"
+                                                                Value="#FF161A2A"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsSelected" Value="True">
+                                                        <Setter TargetName="Bd" Property="BorderBrush"
+                                                                Value="#FF3B82F6"/>
+                                                        <Setter TargetName="Bd" Property="Background"
+                                                                Value="#FF1A2A52"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Border Grid.Column="0" Width="36" Height="36"
+                                                Background="#FF1A2A52" CornerRadius="9"
+                                                BorderBrush="#FF3B82F6" BorderThickness="1"
+                                                Margin="0,0,12,0">
+                                            <md:PackIcon Kind="GoogleDrive" Width="16" Height="16"
+                                                         Foreground="#FF3B82F6"
+                                                         HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Name}"
+                                                       Foreground="{StaticResource TextPrimary}"
+                                                       FontSize="13" FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="{Binding SubText}"
+                                                       Foreground="{StaticResource TextMuted}"
+                                                       FontSize="11" Margin="0,1,0,0"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                        <Grid Grid.Column="2" VerticalAlignment="Center">
+                                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
+                                                        Visibility="{Binding IsBusy, Converter={StaticResource InverseBoolToVisibility}}">
+                                                <Border Background="#FF0F1A2E" CornerRadius="6"
+                                                        Padding="8,2" Margin="0,0,6,0"
+                                                        Height="22" VerticalAlignment="Center"
+                                                        BorderBrush="#FF3B82F6" BorderThickness="1">
+                                                    <TextBlock Text="{Binding Category}"
+                                                               Foreground="#FF3B82F6"
+                                                               FontSize="10.5" FontWeight="SemiBold"
+                                                               LineHeight="14" LineStackingStrategy="BlockLineHeight"
+                                                               TextAlignment="Center"
+                                                               VerticalAlignment="Center"/>
+                                                </Border>
+                                                
+                                                <Button Style="{StaticResource MaterialDesignIconButton}"
+                                                        Width="30" Height="30"
+                                                        ToolTip="Send to Downloader"
+                                                        IsEnabled="{Binding IsDownloading, Converter={StaticResource InverseBool}}"
+                                                        Command="{Binding DataContext.DownloadDriveItemCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                        CommandParameter="{Binding}">
+                                                    <Grid>
+                                                        <md:PackIcon Kind="Download" Width="16" Height="16"
+                                                                     Foreground="#FF3B82F6"
+                                                                     Visibility="{Binding IsDownloading, Converter={StaticResource InverseBoolToVisibility}}"/>
+                                                        <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
+                                                                     IsIndeterminate="True"
+                                                                     Value="0"
+                                                                     Width="16" Height="16"
+                                                                     Foreground="#FF3B82F6"
+                                                                     Visibility="{Binding IsDownloading, Converter={StaticResource BoolToVisibility}}"/>
+                                                    </Grid>
+                                                </Button>
+                                                <Button Style="{StaticResource MaterialDesignIconButton}"
+                                                        Width="30" Height="30"
+                                                        ToolTip="Open in browser"
+                                                        Command="{Binding DataContext.OpenDriveLinkCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                        CommandParameter="{Binding}">
+                                                    <md:PackIcon Kind="OpenInNew" Width="16" Height="16"
+                                                                 Foreground="{StaticResource TextSecondary}"/>
+                                                </Button>
+                                                <Button Style="{StaticResource MaterialDesignIconButton}"
+                                                        Width="30" Height="30"
+                                                        ToolTip="Copy share link"
+                                                        Command="{Binding DataContext.CopyDriveLinkCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                        CommandParameter="{Binding}">
+                                                    <md:PackIcon Kind="ContentCopy" Width="16" Height="16"
+                                                                 Foreground="{StaticResource TextSecondary}"/>
+                                                </Button>
+                                                <Button Style="{StaticResource MaterialDesignIconButton}"
+                                                        Width="30" Height="30"
+                                                        ToolTip="Rename on Drive"
+                                                        Command="{Binding DataContext.RenameDriveFileCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                        CommandParameter="{Binding}">
+                                                    <md:PackIcon Kind="RenameBoxOutline" Width="16" Height="16"
+                                                                 Foreground="{StaticResource TextSecondary}"/>
+                                                </Button>
+                                                <Button Style="{StaticResource MaterialDesignIconButton}"
+                                                        Width="30" Height="30"
+                                                        ToolTip="Delete from Drive (permanent)"
+                                                        Command="{Binding DataContext.DeleteDriveFileCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                        CommandParameter="{Binding}">
+                                                    <md:PackIcon Kind="TrashCanOutline" Width="16" Height="16"
+                                                                 Foreground="{StaticResource DangerBrush}"/>
+                                                </Button>
+                                            </StackPanel>
+                                            
+                                            <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
+                                                         IsIndeterminate="True"
+                                                         Value="0"
+                                                         Width="20" Height="20"
+                                                         Foreground="#FF3B82F6"
+                                                         HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                         Margin="6,0"
+                                                         Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"/>
+                                        </Grid>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </md:Card>
+
+                    <!-- Empty state -->
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                                IsHitTestVisible="False">
+                        <StackPanel.Style>
+                            <Style TargetType="StackPanel">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <MultiDataTrigger>
+                                        <MultiDataTrigger.Conditions>
+                                            <Condition Binding="{Binding IsDriveRefreshing}" Value="False"/>
+                                            <Condition Binding="{Binding DriveItems.Count}" Value="0"/>
+                                        </MultiDataTrigger.Conditions>
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </MultiDataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </StackPanel.Style>
+                        <md:PackIcon Kind="CloudOffOutline" Width="48" Height="48"
+                                     Foreground="{StaticResource TextMuted}"
+                                     HorizontalAlignment="Center"/>
+                        <TextBlock Text="Nothing here yet"
+                                   Foreground="{StaticResource TextSecondary}"
+                                   FontSize="14" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" Margin="0,10,0,2"/>
+                        <TextBlock Text="Upload to Drive from the Dashboard, or hit refresh."
+                                   Foreground="{StaticResource TextMuted}"
+                                   FontSize="11.5"
+                                   HorizontalAlignment="Center"/>
+                    </StackPanel>
+
+                    <!-- Drive loader overlay -->
+                    <Border Background="#CC0F0F18"
+                            CornerRadius="14"
+                            Visibility="{Binding IsDriveRefreshing, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel Orientation="Vertical"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center">
+                            <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
+                                         IsIndeterminate="True"
+                                         Foreground="#FF3B82F6"
+                                         Width="36" Height="36"
+                                         HorizontalAlignment="Center"/>
+                            <TextBlock Text="{Binding DriveBusyMessage}"
+                                       Foreground="{StaticResource TextPrimary}"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center"
+                                       Margin="0,12,0,0"/>
+                            <TextBlock Text="Talking to Google Drive…"
+                                       Foreground="{StaticResource TextMuted}"
+                                       FontSize="11"
+                                       HorizontalAlignment="Center"
+                                       Margin="0,2,0,0"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <!-- Drive action bar -->
+                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
+                    <Button Style="{StaticResource MaterialDesignRaisedButton}"
+                            Background="#FF3B82F6"
+                            BorderBrush="#FF3B82F6"
+                            Foreground="White"
+                            md:ButtonAssist.CornerRadius="10"
+                            Padding="14,6" Margin="0,0,8,0"
+                            Command="{Binding RefreshDriveCommand}"
+                            IsEnabled="{Binding IsDriveRefreshing, Converter={StaticResource InverseBool}}">
+                        <StackPanel Orientation="Horizontal">
+                            <md:PackIcon Kind="Refresh" Width="14" Height="14"
+                                         Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Refresh from Drive" VerticalAlignment="Center" FontSize="12.5"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource MaterialDesignOutlinedButton}"
+                            BorderBrush="{StaticResource AccentPurpleBrush}"
+                            Foreground="{StaticResource AccentPurpleBrush}"
+                            md:ButtonAssist.CornerRadius="10"
+                            Padding="14,6" Margin="0,0,8,0"
+                            Command="{Binding CopyDriveSelectedCommand}">
+                        <StackPanel Orientation="Horizontal">
+                            <md:PackIcon Kind="LinkVariant" Width="14" Height="14"
+                                         Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Copy selected links" VerticalAlignment="Center" FontSize="12.5"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource MaterialDesignOutlinedButton}"
+                            BorderBrush="#FF3B82F6"
+                            Foreground="#FF3B82F6"
+                            md:ButtonAssist.CornerRadius="10"
+                            Padding="14,6"
+                            ToolTip="Reveal the local OctoFetch folder where Drive downloads land"
+                            Command="{Binding OpenDriveDownloadFolderCommand}">
+                        <StackPanel Orientation="Horizontal">
+                            <md:PackIcon Kind="FolderOpenOutline" Width="14" Height="14"
+                                         Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Open download folder" VerticalAlignment="Center" FontSize="12.5"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
-            </Button>
-            <Button Style="{StaticResource MaterialDesignOutlinedButton}"
-                    BorderBrush="{StaticResource WarningBrush}"
-                    Foreground="{StaticResource WarningBrush}"
-                    md:ButtonAssist.CornerRadius="10"
-                    Padding="14,6" Margin="0,0,8,0"
-                    Command="{Binding RenameFolderCommand}">
-                <StackPanel Orientation="Horizontal">
-                    <md:PackIcon Kind="RenameBox" Width="14" Height="14"
-                                 Margin="0,0,6,0" VerticalAlignment="Center"/>
-                    <TextBlock Text="Rename folder" VerticalAlignment="Center" FontSize="12.5"/>
+            </Grid>
+        </Grid>
+
+        <!-- ================== RELEASES TAB ================== -->
+        <Grid Grid.Row="2" Grid.RowSpan="3"
+              Visibility="{Binding IsReleasesTabActive, Converter={StaticResource BoolToVisibility}}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <md:Card Grid.Row="0" Background="{StaticResource BgCard}"
+                         UniformCornerRadius="12" Padding="14,10" Margin="0,0,0,10"
+                         md:ElevationAssist.Elevation="Dp0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <ComboBox Grid.Column="0" Width="170"
+                                  Style="{StaticResource CompactComboBox}"
+                                  md:HintAssist.Hint="Tag"
+                                  ItemsSource="{Binding ReleaseTagFilters}"
+                                  SelectedItem="{Binding ReleasesFilterTag}"
+                                  VerticalAlignment="Center"/>
+                        <TextBox Grid.Column="1"
+                                 Style="{StaticResource MaterialDesignOutlinedTextBox}"
+                                 md:HintAssist.Hint="Search by name or tag"
+                                 md:TextFieldAssist.HasClearButton="True"
+                                 Margin="14,0,0,0"
+                                 FontSize="12"
+                                 Padding="10,4"
+                                 Height="32"
+                                 VerticalAlignment="Center"
+                                 Text="{Binding ReleasesSearchText, UpdateSourceTrigger=PropertyChanged}"/>
+                    </Grid>
+                </md:Card>
+
+                <!-- Releases list -->
+                <Grid Grid.Row="1">
+                    <md:Card Background="{StaticResource BgCard}"
+                             UniformCornerRadius="14" Padding="6"
+                             md:ElevationAssist.Elevation="Dp0">
+                        <ListView x:Name="ListViewReleases"
+                                  Background="Transparent"
+                                  BorderThickness="0"
+                                  ItemsSource="{Binding FilteredReleaseItems}"
+                                  SelectionMode="Extended"
+                                  VirtualizingPanel.IsVirtualizing="True"
+                                  VirtualizingPanel.VirtualizationMode="Recycling"
+                                  VirtualizingPanel.ScrollUnit="Pixel"
+                                  ScrollViewer.PanningMode="VerticalOnly"
+                                  ScrollViewer.IsDeferredScrollingEnabled="False"
+                                  ScrollViewer.CanContentScroll="True">
+                            <ListView.ItemContainerStyle>
+                                <Style TargetType="ListViewItem">
+                                    <Setter Property="Background" Value="Transparent"/>
+                                    <Setter Property="BorderThickness" Value="0"/>
+                                    <Setter Property="Padding" Value="0"/>
+                                    <Setter Property="Margin" Value="0,2"/>
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ListViewItem">
+                                                <Border x:Name="Bd" CornerRadius="10"
+                                                        Background="#FF14141E"
+                                                        BorderBrush="#FF1F1F2C" BorderThickness="1"
+                                                        Padding="14,10">
+                                                    <ContentPresenter/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="Bd" Property="BorderBrush"
+                                                                Value="#FFF59E0B"/>
+                                                        <Setter TargetName="Bd" Property="Background"
+                                                                Value="#FF1A1810"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsSelected" Value="True">
+                                                        <Setter TargetName="Bd" Property="BorderBrush"
+                                                                Value="#FFF59E0B"/>
+                                                        <Setter TargetName="Bd" Property="Background"
+                                                                Value="#FF3A2A0A"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </ListView.ItemContainerStyle>
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Border Grid.Column="0" Width="36" Height="36"
+                                                Background="#FF3A2A0A" CornerRadius="9"
+                                                BorderBrush="#FFF59E0B" BorderThickness="1"
+                                                Margin="0,0,12,0">
+                                            <md:PackIcon Kind="Package" Width="16" Height="16"
+                                                         Foreground="#FFF59E0B"
+                                                         HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        </Border>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Name}"
+                                                       Foreground="{StaticResource TextPrimary}"
+                                                       FontSize="13" FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="{Binding SubText}"
+                                                       Foreground="{StaticResource TextMuted}"
+                                                       FontSize="11" Margin="0,1,0,0"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                                            <Border Background="#FF2A1F09" CornerRadius="6"
+                                                    Padding="8,2" Margin="0,0,6,0"
+                                                    Height="22" VerticalAlignment="Center"
+                                                    BorderBrush="#FFF59E0B" BorderThickness="1">
+                                                <TextBlock Text="{Binding Tag}"
+                                                           Foreground="#FFF59E0B"
+                                                           FontSize="10.5" FontWeight="SemiBold"
+                                                           LineHeight="14" LineStackingStrategy="BlockLineHeight"
+                                                           TextAlignment="Center"
+                                                           VerticalAlignment="Center"/>
+                                            </Border>
+                                            
+                                            <Grid>
+                                                <StackPanel Orientation="Horizontal"
+                                                            Visibility="{Binding IsBusy, Converter={StaticResource InverseBoolToVisibility}}">
+                                                    <Button Style="{StaticResource MaterialDesignIconButton}"
+                                                            Width="30" Height="30"
+                                                            ToolTip="Send to Downloader"
+                                                            Command="{Binding DataContext.DownloadReleaseItemCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                            CommandParameter="{Binding}">
+                                                        <md:PackIcon Kind="Download" Width="16" Height="16"
+                                                                     Foreground="#FFF59E0B"/>
+                                                    </Button>
+                                                    <Button Style="{StaticResource MaterialDesignIconButton}"
+                                                            Width="30" Height="30"
+                                                            ToolTip="Open release page"
+                                                            Command="{Binding DataContext.OpenReleaseLinkCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                            CommandParameter="{Binding}">
+                                                        <md:PackIcon Kind="OpenInNew" Width="16" Height="16"
+                                                                     Foreground="{StaticResource TextSecondary}"/>
+                                                    </Button>
+                                                    <Button Style="{StaticResource MaterialDesignIconButton}"
+                                                            Width="30" Height="30"
+                                                            ToolTip="Copy download link"
+                                                            Command="{Binding DataContext.CopyReleaseLinkCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                            CommandParameter="{Binding}">
+                                                        <md:PackIcon Kind="ContentCopy" Width="16" Height="16"
+                                                                     Foreground="{StaticResource TextSecondary}"/>
+                                                    </Button>
+                                                    <Button Style="{StaticResource MaterialDesignIconButton}"
+                                                            Width="30" Height="30"
+                                                            ToolTip="Rename asset"
+                                                            Command="{Binding DataContext.RenameReleaseAssetCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                            CommandParameter="{Binding}">
+                                                        <md:PackIcon Kind="RenameBoxOutline" Width="16" Height="16"
+                                                                     Foreground="{StaticResource TextSecondary}"/>
+                                                    </Button>
+                                                    <Button Style="{StaticResource MaterialDesignIconButton}"
+                                                            Width="30" Height="30"
+                                                            ToolTip="Delete asset"
+                                                            Command="{Binding DataContext.DeleteReleaseAssetCommand, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                            CommandParameter="{Binding}">
+                                                        <md:PackIcon Kind="TrashCanOutline" Width="16" Height="16"
+                                                                     Foreground="{StaticResource DangerBrush}"/>
+                                                    </Button>
+                                                </StackPanel>
+                                                <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
+                                                             IsIndeterminate="True"
+                                                             Value="0"
+                                                             Width="20" Height="20"
+                                                             Foreground="#FFF59E0B"
+                                                             HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                             Margin="6,0"
+                                                             Visibility="{Binding IsBusy, Converter={StaticResource BoolToVisibility}}"/>
+                                            </Grid>
+                                        </StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </md:Card>
+
+                    <!-- Empty state -->
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center"
+                                IsHitTestVisible="False">
+                        <StackPanel.Style>
+                            <Style TargetType="StackPanel">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <MultiDataTrigger>
+                                        <MultiDataTrigger.Conditions>
+                                            <Condition Binding="{Binding IsReleasesRefreshing}" Value="False"/>
+                                            <Condition Binding="{Binding ReleaseItems.Count}" Value="0"/>
+                                        </MultiDataTrigger.Conditions>
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </MultiDataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </StackPanel.Style>
+                        <md:PackIcon Kind="TagOffOutline" Width="48" Height="48"
+                                     Foreground="{StaticResource TextMuted}"
+                                     HorizontalAlignment="Center"/>
+                        <TextBlock Text="No releases yet"
+                                   Foreground="{StaticResource TextSecondary}"
+                                   FontSize="14" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" Margin="0,10,0,2"/>
+                        <TextBlock Text="Upload from the Dashboard with destination = GitHub Release."
+                                   Foreground="{StaticResource TextMuted}"
+                                   FontSize="11.5"
+                                   HorizontalAlignment="Center"/>
+                    </StackPanel>
+
+                    <!-- Loader overlay -->
+                    <Border Background="#CC0F0F18"
+                            CornerRadius="14"
+                            Visibility="{Binding IsReleasesRefreshing, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel Orientation="Vertical"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center">
+                            <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
+                                         IsIndeterminate="True"
+                                         Foreground="#FFF59E0B"
+                                         Width="36" Height="36"
+                                         HorizontalAlignment="Center"/>
+                            <TextBlock Text="{Binding ReleasesBusyMessage}"
+                                       Foreground="{StaticResource TextPrimary}"
+                                       FontSize="13"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center"
+                                       Margin="0,12,0,0"/>
+                            <TextBlock Text="Talking to GitHub Releases…"
+                                       Foreground="{StaticResource TextMuted}"
+                                       FontSize="11"
+                                       HorizontalAlignment="Center"
+                                       Margin="0,2,0,0"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <!-- Action bar -->
+                <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
+                    <Button Style="{StaticResource MaterialDesignRaisedButton}"
+                            Background="#FFF59E0B"
+                            BorderBrush="#FFF59E0B"
+                            Foreground="White"
+                            md:ButtonAssist.CornerRadius="10"
+                            Padding="14,6" Margin="0,0,8,0"
+                            Command="{Binding RefreshReleasesCommand}"
+                            IsEnabled="{Binding IsReleasesRefreshing, Converter={StaticResource InverseBool}}">
+                        <StackPanel Orientation="Horizontal">
+                            <md:PackIcon Kind="Refresh" Width="14" Height="14"
+                                         Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Refresh release list" VerticalAlignment="Center" FontSize="12.5"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource MaterialDesignOutlinedButton}"
+                            BorderBrush="{StaticResource AccentPurpleBrush}"
+                            Foreground="{StaticResource AccentPurpleBrush}"
+                            md:ButtonAssist.CornerRadius="10"
+                            Padding="14,6"
+                            Command="{Binding CopyReleaseSelectedCommand}">
+                        <StackPanel Orientation="Horizontal">
+                            <md:PackIcon Kind="LinkVariant" Width="14" Height="14"
+                                         Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock Text="Copy selected links" VerticalAlignment="Center" FontSize="12.5"/>
+                        </StackPanel>
+                    </Button>
                 </StackPanel>
-            </Button>
-            <Button Style="{StaticResource MaterialDesignOutlinedButton}"
-                    BorderBrush="{StaticResource DangerBrush}"
-                    Foreground="{StaticResource DangerBrush}"
-                    md:ButtonAssist.CornerRadius="10"
-                    Padding="14,6"
-                    Command="{Binding DeleteSelectedCommand}">
-                <StackPanel Orientation="Horizontal">
-                    <md:PackIcon Kind="TrashCanOutline" Width="14" Height="14"
-                                 Margin="0,0,6,0" VerticalAlignment="Center"/>
-                    <TextBlock Text="Delete" VerticalAlignment="Center" FontSize="12.5"/>
-                </StackPanel>
-            </Button>
-        </StackPanel>
+            </Grid>
+        </Grid>
     </Grid>
 </UserControl>

@@ -1,0 +1,329 @@
+# OctoFetch-YouTubeDrive-Version: 3
+
+name: 'YouTube → Drive Engine'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'YouTube video URL'
+        required: true
+        type: string
+      folder_name:
+        description: 'Folder identifier used for the links manifest path'
+        required: true
+        type: string
+      output_format:
+        description: 'mp4 or mp3'
+        required: false
+        type: string
+        default: 'mp4'
+      desired_quality:
+        description: 'Video quality (720p, 1080p) or audio bitrate (128kbps, 192kbps, 320kbps)'
+        required: false
+        type: string
+        default: '720p'
+      drive_category:
+        description: 'Sub-folder created under OctoFetch/ on Google Drive'
+        required: false
+        type: string
+        default: 'YouTube'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: yt-drive-${{ github.event.inputs.folder_name }}
+  cancel-in-progress: false
+
+jobs:
+  youtube-drive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+
+      - name: Checkout (sparse, fast)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            .github
+          sparse-checkout-cone-mode: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends curl python3 python3-pip
+          pip3 install --quiet requests google-api-python-client google-auth google-auth-httplib2
+
+      # Same resolver block as youtube_downloader.yml. Both workflows hit the
+      # exact same backend (hub.ytconvert.org) so they share the cache and
+      # produce byte-identical files for a given (url, format, quality) tuple.
+      - name: Resolve download link
+        id: retrieve
+        env:
+          INPUT_URL: ${{ github.event.inputs.video_url }}
+          INPUT_FORMAT: ${{ github.event.inputs.output_format }}
+          INPUT_QUALITY: ${{ github.event.inputs.desired_quality }}
+        run: |
+          python3 << 'EOF'
+          import os, sys, time, re, requests
+
+          URL  = os.environ.get('INPUT_URL', '')
+          FMT  = os.environ.get('INPUT_FORMAT', 'mp4')
+          QUAL = os.environ.get('INPUT_QUALITY', '720p')
+
+          is_audio = FMT == 'mp3'
+          if is_audio:
+              QUAL = QUAL if QUAL in ('64kbps','128kbps','192kbps','320kbps') else '192kbps'
+          else:
+              QUAL = QUAL if QUAL in ('360p','480p','720p','1080p') else '720p'
+
+          payload = {
+              "url": URL,
+              "os": "linux",
+              "output": {"type": "audio" if is_audio else "video", "format": FMT}
+          }
+          if is_audio:
+              payload["audio"] = {"bitrate": QUAL}
+          else:
+              payload["output"]["quality"] = QUAL
+
+          s = requests.Session()
+          s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+          try:
+              s.get("https://media.ytmp3.gg/", timeout=15)
+          except Exception as e:
+              print(f"warmup GET failed (non-fatal): {e}")
+
+          # hub.ytconvert.org is flaky; retry the initial POST a few times
+          # with backoff before giving up. ReadTimeout / ConnectionError /
+          # 5xx are all considered transient. A 451 (geo-block) is fatal
+          # and bails early so the user gets a clear error.
+          data = None
+          last_err = None
+          for attempt in range(1, 6):
+              try:
+                  resp = s.post("https://hub.ytconvert.org/api/download",
+                                json=payload, timeout=60)
+                  if resp.status_code == 451:
+                      print("::error::hub.ytconvert.org refused this request (HTTP 451 — geo/legal block).")
+                      sys.exit(1)
+                  resp.raise_for_status()
+                  data = resp.json()
+                  break
+              except Exception as e:
+                  last_err = e
+                  wait = min(60, 5 * attempt)
+                  print(f"hub.ytconvert.org attempt {attempt}/5 failed: {e!r} — retrying in {wait}s")
+                  time.sleep(wait)
+          if data is None:
+              print(f"::error::hub.ytconvert.org unreachable after 5 attempts: {last_err!r}")
+              sys.exit(1)
+
+          status_url = data.get('statusUrl')
+          title = data.get('title', 'video')
+
+          print(f"Waiting for conversion: {title}")
+          dl_url = None
+          for _ in range(150):
+              time.sleep(2)
+              r = s.get(status_url, timeout=20)
+              status = r.json()
+              if status.get('status') == 'completed':
+                  dl_url = status.get('downloadUrl')
+                  break
+              if status.get('status') == 'failed':
+                  print("::error::Server failed to prepare the video")
+                  sys.exit(1)
+
+          if not dl_url:
+              print("::error::Could not get download link")
+              sys.exit(1)
+
+          vid   = re.search(r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})', URL)
+          vid   = vid[1] if vid else 'unknown'
+          clean = re.sub(r'[^a-zA-Z0-9\-_()\[\]]', '_', title.replace(' ', '_'))
+          clean = re.sub(r'_+', '_', clean).strip('_')[:70] or vid
+          clean = clean.lstrip('-')
+          fname = f"{clean}_{vid}_{QUAL}.{FMT}"
+
+          with open(".download_info", "w", encoding="utf-8") as f:
+              f.write(f"{dl_url}\n{fname}\n{title}")
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"filename={fname}\n")
+              f.write(f"title={title}\n")
+          EOF
+
+      - name: Download File
+        run: |
+          set -euo pipefail
+          DL_URL=$(head -1 .download_info)
+          FILENAME=$(sed -n '2p' .download_info)
+          mkdir -p source_file
+          echo "Downloading: $FILENAME"
+          curl -L --fail --retry 3 --progress-bar \
+            -o "source_file/$FILENAME" "$DL_URL"
+          if [ ! -s "source_file/$FILENAME" ]; then
+            echo "::error::Downloaded file is empty!"
+            exit 1
+          fi
+
+      - name: Compute folder identifier
+        env:
+          FOLDER_INPUT: ${{ github.event.inputs.folder_name }}
+        run: |
+          set -euo pipefail
+          FOLDER=$(printf '%s' "$FOLDER_INPUT" | tr -c 'A-Za-z0-9._-' '_')
+          [ ${#FOLDER} -gt 100 ] && FOLDER="${FOLDER:0:100}"
+          [ -z "$FOLDER" ] && FOLDER="YT_$(date +%Y%m%d%H%M%S)"
+          echo "FOLDER=$FOLDER" >> "$GITHUB_ENV"
+
+      - name: Upload to Google Drive
+        env:
+          DRIVE_REFRESH_TOKEN: ${{ secrets.OCTOFETCH_DRIVE_REFRESH_TOKEN }}
+          DRIVE_CLIENT_ID: ${{ secrets.OCTOFETCH_DRIVE_CLIENT_ID }}
+          DRIVE_CLIENT_SECRET: ${{ secrets.OCTOFETCH_DRIVE_CLIENT_SECRET }}
+          DRIVE_CATEGORY: ${{ github.event.inputs.drive_category }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DRIVE_REFRESH_TOKEN:-}" ] || [ -z "${DRIVE_CLIENT_ID:-}" ] || [ -z "${DRIVE_CLIENT_SECRET:-}" ]; then
+            echo "::error::Drive credentials missing. Re-connect Google Drive in the OctoFetch desktop app."
+            exit 1
+          fi
+
+          python3 << 'PY'
+          import os, sys, json, mimetypes
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+          from google.oauth2.credentials import Credentials
+
+          creds = Credentials(
+              None,
+              refresh_token=os.environ['DRIVE_REFRESH_TOKEN'],
+              client_id=os.environ['DRIVE_CLIENT_ID'],
+              client_secret=os.environ['DRIVE_CLIENT_SECRET'],
+              token_uri='https://oauth2.googleapis.com/token',
+              scopes=['https://www.googleapis.com/auth/drive.file'],
+          )
+          drive = build('drive', 'v3', credentials=creds, cache_discovery=False)
+
+          category = (os.environ.get('DRIVE_CATEGORY') or 'YouTube').strip() or 'YouTube'
+          folder = os.environ['FOLDER']
+          source_dir = 'source_file'
+
+          def escape(name):
+              return name.replace("\\", "\\\\").replace("'", "\\'")
+
+          def find_or_create_folder(name, parent_id):
+              parent_clause = (f"and '{parent_id}' in parents"
+                               if parent_id else "and 'root' in parents")
+              q = ("mimeType = 'application/vnd.google-apps.folder' "
+                   "and trashed = false "
+                   f"and name = '{escape(name)}' {parent_clause}")
+              resp = drive.files().list(
+                  q=q, spaces='drive',
+                  fields='files(id, name)',
+                  pageSize=10
+              ).execute()
+              files = resp.get('files', [])
+              if files:
+                  return files[0]['id']
+              meta = {'name': name, 'mimeType': 'application/vnd.google-apps.folder'}
+              if parent_id:
+                  meta['parents'] = [parent_id]
+              created = drive.files().create(body=meta, fields='id').execute()
+              return created['id']
+
+          root_id = find_or_create_folder('OctoFetch', None)
+          target_id = find_or_create_folder(category, root_id)
+
+          uploads = sorted(os.listdir(source_dir)) if os.path.isdir(source_dir) else []
+          if not uploads:
+              print('::error::source_file/ is empty after download.', file=sys.stderr)
+              sys.exit(1)
+
+          results = []
+          for fname in uploads:
+              path = os.path.join(source_dir, fname)
+              mime, _ = mimetypes.guess_type(fname)
+              media = MediaFileUpload(
+                  path,
+                  mimetype=mime or 'application/octet-stream',
+                  resumable=True,
+                  chunksize=4 * 1024 * 1024,
+              )
+              meta = {'name': fname, 'parents': [target_id]}
+              print(f'Uploading: {fname}')
+              file = drive.files().create(
+                  body=meta, media_body=media,
+                  fields='id, name, size, webViewLink, webContentLink'
+              ).execute()
+
+              try:
+                  drive.permissions().create(
+                      fileId=file['id'],
+                      body={'role': 'reader', 'type': 'anyone'},
+                      fields='id',
+                  ).execute()
+              except Exception as exc:
+                  print(f'::warning::Could not publish {fname}: {exc}', file=sys.stderr)
+
+              share_url = (
+                  file.get('webViewLink')
+                  or f"https://drive.google.com/file/d/{file['id']}/view"
+              )
+              results.append({
+                  'name': file.get('name', fname),
+                  'url': share_url,
+                  'id': file['id'],
+                  'size': file.get('size'),
+              })
+              print(f'Uploaded: {share_url}')
+
+          # See drive_uploader.yml for the rationale on this path. The
+          # OctoFetch File Manager only lists downloads/<folder>/..., so
+          # we keep the Drive manifest under .octofetch/drive/<folder>/
+          # to avoid surfacing an empty pseudo-folder in the GitHub view.
+          out_dir = os.path.join('.octofetch', 'drive', folder)
+          os.makedirs(out_dir, exist_ok=True)
+          with open(os.path.join(out_dir, 'links.json'), 'w', encoding='utf-8') as f:
+              json.dump({'destination': 'drive', 'files': results}, f, indent=2)
+          PY
+
+      - name: Commit links manifest
+        run: |
+          set -euo pipefail
+
+          git config user.name "OctoFetchBot"
+          git config user.email "bot@octofetch.local"
+          git config advice.updateSparsePath false
+
+          git add --sparse -- ".octofetch/drive/$FOLDER/links.json"
+          if git diff --cached --quiet; then
+            echo "No links.json staged."
+            exit 0
+          fi
+          git commit -m "YouTube→Drive: $FOLDER links manifest"
+
+          for attempt in 1 2 3 4 5; do
+            git fetch origin >/dev/null 2>&1 || true
+            git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)" >/dev/null 2>&1 || true
+            if git push; then
+              echo "Manifest pushed on attempt $attempt"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::Failed to push links.json after 5 attempts"
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf source_file .download_info 2>/dev/null || true

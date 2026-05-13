@@ -1,0 +1,329 @@
+# OctoFetch-YouTubeRelease-Version: 2
+
+name: 'YouTube to GitHub Release Engine'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'YouTube video URL'
+        required: true
+        type: string
+      folder_name:
+        description: 'Folder identifier used for the links manifest path'
+        required: true
+        type: string
+      release_tag:
+        description: 'Tag name for the GitHub release (created if absent)'
+        required: true
+        type: string
+      release_title:
+        description: 'Release title shown on GitHub (defaults to the tag)'
+        required: false
+        type: string
+        default: ''
+      output_format:
+        description: 'mp4 or mp3'
+        required: false
+        type: string
+        default: 'mp4'
+      desired_quality:
+        description: 'Video quality (720p, 1080p) or audio bitrate (128kbps, 192kbps, 320kbps)'
+        required: false
+        type: string
+        default: '720p'
+      chunk_threshold_bytes:
+        description: 'Files larger than this are split into N parts before upload'
+        required: false
+        type: string
+        default: '2040109465'  # ~1.95 GiB
+
+permissions:
+  contents: write
+
+concurrency:
+  group: yt-release-${{ github.event.inputs.release_tag }}-${{ github.event.inputs.folder_name }}
+  cancel-in-progress: false
+
+jobs:
+  youtube-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+
+      - name: Checkout (sparse, fast)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            .github
+            .octofetch
+          sparse-checkout-cone-mode: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends curl python3 python3-pip jq coreutils
+          pip3 install --quiet requests
+          gh --version >/dev/null
+
+      # Same resolver as the YouTube → Drive workflow so a given (url, format,
+      # quality) tuple produces the same file regardless of destination.
+      - name: Resolve download link
+        id: retrieve
+        env:
+          INPUT_URL: ${{ github.event.inputs.video_url }}
+          INPUT_FORMAT: ${{ github.event.inputs.output_format }}
+          INPUT_QUALITY: ${{ github.event.inputs.desired_quality }}
+        run: |
+          python3 << 'EOF'
+          import os, sys, time, re, requests
+
+          URL  = os.environ.get('INPUT_URL', '')
+          FMT  = os.environ.get('INPUT_FORMAT', 'mp4')
+          QUAL = os.environ.get('INPUT_QUALITY', '720p')
+
+          is_audio = FMT == 'mp3'
+          if is_audio:
+              QUAL = QUAL if QUAL in ('64kbps','128kbps','192kbps','320kbps') else '192kbps'
+          else:
+              QUAL = QUAL if QUAL in ('360p','480p','720p','1080p') else '720p'
+
+          payload = {
+              "url": URL,
+              "os": "linux",
+              "output": {"type": "audio" if is_audio else "video", "format": FMT}
+          }
+          if is_audio:
+              payload["audio"] = {"bitrate": QUAL}
+          else:
+              payload["output"]["quality"] = QUAL
+
+          s = requests.Session()
+          s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+          try:
+              s.get("https://media.ytmp3.gg/", timeout=15)
+          except Exception as e:
+              print(f"warmup GET failed (non-fatal): {e}")
+
+          data = None
+          last_err = None
+          for attempt in range(1, 6):
+              try:
+                  resp = s.post("https://hub.ytconvert.org/api/download",
+                                json=payload, timeout=60)
+                  if resp.status_code == 451:
+                      print("::error::hub.ytconvert.org refused this request (HTTP 451 — geo/legal block).")
+                      sys.exit(1)
+                  resp.raise_for_status()
+                  data = resp.json()
+                  break
+              except Exception as e:
+                  last_err = e
+                  wait = min(60, 5 * attempt)
+                  print(f"hub.ytconvert.org attempt {attempt}/5 failed: {e!r} — retrying in {wait}s")
+                  time.sleep(wait)
+          if data is None:
+              print(f"::error::hub.ytconvert.org unreachable after 5 attempts: {last_err!r}")
+              sys.exit(1)
+
+          status_url = data.get('statusUrl')
+          title = data.get('title', 'video')
+
+          print(f"Waiting for conversion: {title}")
+          dl_url = None
+          for _ in range(150):
+              time.sleep(2)
+              r = s.get(status_url, timeout=20)
+              status = r.json()
+              if status.get('status') == 'completed':
+                  dl_url = status.get('downloadUrl')
+                  break
+              if status.get('status') == 'failed':
+                  print("::error::Server failed to prepare the video")
+                  sys.exit(1)
+
+          if not dl_url:
+              print("::error::Could not get download link")
+              sys.exit(1)
+
+          vid   = re.search(r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})', URL)
+          vid   = vid[1] if vid else 'unknown'
+          clean = re.sub(r'[^a-zA-Z0-9\-_()\[\]]', '_', title.replace(' ', '_'))
+          clean = re.sub(r'_+', '_', clean).strip('_')[:70] or vid
+          clean = clean.lstrip('-')
+          fname = f"{clean}_{vid}_{QUAL}.{FMT}"
+
+          with open(".download_info", "w", encoding="utf-8") as f:
+              f.write(f"{dl_url}\n{fname}\n{title}")
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"filename={fname}\n")
+              f.write(f"title={title}\n")
+          EOF
+
+      - name: Download File
+        run: |
+          set -euo pipefail
+          DL_URL=$(head -1 .download_info)
+          FILENAME=$(sed -n '2p' .download_info)
+          mkdir -p source_file
+          echo "Downloading: $FILENAME"
+          curl -L --fail --retry 3 --progress-bar \
+            -o "source_file/$FILENAME" "$DL_URL"
+          if [ ! -s "source_file/$FILENAME" ]; then
+            echo "::error::Downloaded file is empty!"
+            exit 1
+          fi
+          echo "FINAL_FILE=$FILENAME" >> "$GITHUB_ENV"
+
+      - name: Compute folder identifier
+        env:
+          FOLDER_INPUT: ${{ github.event.inputs.folder_name }}
+        run: |
+          set -euo pipefail
+          FOLDER=$(printf '%s' "$FOLDER_INPUT" | tr -c 'A-Za-z0-9._-' '_')
+          [ ${#FOLDER} -gt 100 ] && FOLDER="${FOLDER:0:100}"
+          [ -z "$FOLDER" ] && FOLDER="YT_$(date +%Y%m%d%H%M%S)"
+          echo "FOLDER=$FOLDER" >> "$GITHUB_ENV"
+
+      - name: Split large files
+        env:
+          THRESHOLD: ${{ github.event.inputs.chunk_threshold_bytes }}
+        run: |
+          set -euo pipefail
+          SRC="source_file/$FINAL_FILE"
+          SIZE=$(stat -c '%s' "$SRC")
+          echo "FILE_SIZE=$SIZE"
+
+          MAX_PART=2040109465
+          if [ -z "${THRESHOLD:-}" ] || [ "$THRESHOLD" -le 0 ]; then
+            THRESHOLD=$MAX_PART
+          fi
+          if [ "$THRESHOLD" -gt "$MAX_PART" ]; then
+            THRESHOLD=$MAX_PART
+          fi
+          echo "THRESHOLD=$THRESHOLD"
+
+          mkdir -p upload_parts
+          if [ "$SIZE" -le "$THRESHOLD" ]; then
+            cp "$SRC" "upload_parts/$FINAL_FILE"
+            echo "PART_COUNT=1" >> "$GITHUB_ENV"
+            echo "IS_SPLIT=false" >> "$GITHUB_ENV"
+          else
+            PARTS=$(( (SIZE + THRESHOLD - 1) / THRESHOLD ))
+            PART_BYTES=$(( (SIZE + PARTS - 1) / PARTS ))
+            echo "Splitting $FINAL_FILE ($SIZE bytes) into $PARTS parts of $PART_BYTES bytes each."
+            split -d -a 2 -b "$PART_BYTES" "$SRC" "upload_parts/${FINAL_FILE}.part"
+            echo "PART_COUNT=$PARTS" >> "$GITHUB_ENV"
+            echo "IS_SPLIT=true" >> "$GITHUB_ENV"
+          fi
+          ls -lh upload_parts
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.release_tag }}
+          TITLE: ${{ github.event.inputs.release_title }}
+        run: |
+          set -euo pipefail
+          [ -n "${TAG:-}" ] || { echo "::error::release_tag is empty"; exit 1; }
+          DISPLAY_TITLE="${TITLE:-$TAG}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — reusing."
+          else
+            echo "Creating release $TAG ($DISPLAY_TITLE)..."
+            gh release create "$TAG" \
+              --title "$DISPLAY_TITLE" \
+              --notes "Uploaded by OctoFetch (folder: $FOLDER)" \
+              --target "${GITHUB_REF_NAME:-main}"
+          fi
+
+      - name: Upload assets and build manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          ASSETS=( upload_parts/* )
+          if [ ${#ASSETS[@]} -eq 0 ]; then
+            echo "::error::No assets produced — split stage left upload_parts/ empty."
+            exit 1
+          fi
+
+          for a in "${ASSETS[@]}"; do
+            echo "Uploading: $(basename "$a")"
+            gh release upload "$TAG" "$a" --clobber
+          done
+
+          mkdir -p ".octofetch/releases/$FOLDER"
+          gh api "repos/$GH_REPO/releases/tags/$TAG" \
+            -H 'Accept: application/vnd.github+json' > release.json
+
+          jq --arg folder "$FOLDER" \
+             --arg tag    "$TAG" \
+             --arg base   "$FINAL_FILE" \
+             --arg split  "$IS_SPLIT" \
+             --argjson parts "${PART_COUNT:-1}" \
+             '{
+                destination: "release",
+                tag: $tag,
+                folder: $folder,
+                base_name: $base,
+                is_split: ($split == "true"),
+                part_count: $parts,
+                release_url: .html_url,
+                files: [
+                  .assets[] | {
+                    name: .name,
+                    url: .browser_download_url,
+                    api_url: .url,
+                    id: .id,
+                    size: .size,
+                    download_count: .download_count
+                  }
+                ]
+              }' release.json > ".octofetch/releases/$FOLDER/links.json"
+
+      - name: Commit links manifest
+        env:
+          # TAG isn't carried forward via GITHUB_ENV — re-inject it here so
+          # `set -u` doesn't bail on the commit message expansion.
+          TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "OctoFetchBot"
+          git config user.email "bot@octofetch.local"
+          git config advice.updateSparsePath false
+
+          git add --sparse -- ".octofetch/releases/$FOLDER/links.json"
+          if git diff --cached --quiet; then
+            echo "No links.json staged."
+            exit 0
+          fi
+          git commit -m "Release: $FOLDER ($TAG) links manifest"
+
+          for attempt in 1 2 3 4 5; do
+            git fetch origin >/dev/null 2>&1 || true
+            git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)" >/dev/null 2>&1 || true
+            if git push; then
+              echo "Manifest pushed on attempt $attempt"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::Failed to push links.json after 5 attempts"
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf source_file upload_parts 2>/dev/null || true

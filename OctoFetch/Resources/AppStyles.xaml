@@ -119,26 +119,23 @@
         <Setter Property="VerticalContentAlignment" Value="Center"/>
         <Setter Property="FontSize" Value="13.5"/>
         <Setter Property="FontWeight" Value="Medium"/>
-        <Setter Property="md:RippleAssist.Feedback" Value="#33A78BFA"/>
+        <Setter Property="md:RippleAssist.IsDisabled" Value="True"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="RadioButton">
                     <Grid>
                         <Border x:Name="Bg"
                                 Background="Transparent"
-                                CornerRadius="10">
-                            <md:Ripple Content="{TemplateBinding Content}"
-                                       ContentTemplate="{TemplateBinding ContentTemplate}"
-                                       Padding="{TemplateBinding Padding}"
-                                       HorizontalContentAlignment="Left"
-                                       VerticalContentAlignment="Center"
-                                       Focusable="False"/>
+                                CornerRadius="10"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Left"
+                                              VerticalAlignment="Center"/>
                         </Border>
                         <Border x:Name="Indicator"
                                 Width="3" CornerRadius="2"
                                 HorizontalAlignment="Left"
                                 Margin="2,8" Opacity="0"
-                                Background="{StaticResource AccentGradient}"/>
+                                Background="{StaticResource AccentCyanBrush}"/>
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -147,24 +144,7 @@
                         <Trigger Property="IsChecked" Value="True">
                             <Setter TargetName="Bg" Property="Background" Value="#FF22223A"/>
                             <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
-                            <Trigger.EnterActions>
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetName="Indicator"
-                                                         Storyboard.TargetProperty="Opacity"
-                                                         To="1" Duration="0:0:0.18"/>
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </Trigger.EnterActions>
-                            <Trigger.ExitActions>
-                                <BeginStoryboard>
-                                    <Storyboard>
-                                        <DoubleAnimation Storyboard.TargetName="Indicator"
-                                                         Storyboard.TargetProperty="Opacity"
-                                                         To="0" Duration="0:0:0.12"/>
-                                    </Storyboard>
-                                </BeginStoryboard>
-                            </Trigger.ExitActions>
+                            <Setter TargetName="Indicator" Property="Opacity" Value="1"/>
                         </Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
@@ -179,16 +159,14 @@
         <Setter Property="Height" Value="34"/>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="BorderThickness" Value="0"/>
-        <Setter Property="md:RippleAssist.Feedback" Value="#3300D4FF"/>
+        <Setter Property="md:RippleAssist.IsDisabled" Value="True"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
                     <Border x:Name="Bg" Background="{TemplateBinding Background}"
                             CornerRadius="8">
-                        <md:Ripple Content="{TemplateBinding Content}"
-                                   HorizontalContentAlignment="Center"
-                                   VerticalContentAlignment="Center"
-                                   Focusable="False"/>
+                        <ContentPresenter HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"/>
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
@@ -209,51 +187,79 @@
         </Style.Triggers>
     </Style>
 
+    <!-- Log row.
+         Layout: [accent bar] [severity dot] [timestamp] [message]
+         - The accent bar (col 0) and severity dot (col 1) both pick up the
+           per-entry Color brush, so a red ERROR row gives a strong but
+           contained visual cue without tinting the whole message in red.
+         - Timestamp uses a fixed-width monospace style so columns align
+           when many rows scroll past.
+         - Message body uses a stable readable foreground (TextPrimary)
+           and wraps. ToolTip surfaces the full text on hover.
+         - Hover state lifts the row background slightly so the user can
+           visually track the line their cursor is on. -->
     <DataTemplate x:Key="LogEntryTemplate">
-        <Border Margin="0,3" Padding="0"
+        <Border Margin="0,2" Padding="0"
                 Background="#FF14141E"
                 CornerRadius="8"
                 BorderBrush="#FF1F1F2C"
                 BorderThickness="1">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Style.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Background" Value="#FF181826"/>
+                            <Setter Property="BorderBrush" Value="#FF2A2A3C"/>
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="3"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
+
+                <!-- Accent bar -->
                 <Border Grid.Column="0"
                         Background="{Binding Color, Converter={StaticResource StringToBrush}}"
-                        CornerRadius="2,0,0,2" Margin="0,4"/>
-                <TextBlock Grid.Column="1"
+                        CornerRadius="2,0,0,2" Margin="0,5"/>
+
+                <!-- Severity dot -->
+                <Ellipse Grid.Column="1"
+                         Width="6" Height="6"
+                         Margin="10,0,8,0"
+                         VerticalAlignment="Center"
+                         Fill="{Binding Color, Converter={StaticResource StringToBrush}}"/>
+
+                <!-- Timestamp (dim, monospace) -->
+                <TextBlock Grid.Column="2"
+                           Text="{Binding Timestamp}"
+                           Foreground="{StaticResource TextMuted}"
+                           FontFamily="Cascadia Mono, Cascadia Code, Consolas, monospace"
+                           FontSize="11"
+                           VerticalAlignment="Center"
+                           Margin="0,0,10,0"
+                           Visibility="{Binding Timestamp, Converter={StaticResource StringToVisibility}, FallbackValue=Collapsed}"/>
+
+                <!-- Message body -->
+                <TextBlock Grid.Column="3"
                            Text="{Binding Message}"
-                           Foreground="{Binding Color, Converter={StaticResource StringToBrush}}"
-                           FontFamily="Cascadia Code, Consolas, monospace"
+                           Foreground="{StaticResource TextPrimary}"
+                           FontFamily="Cascadia Mono, Cascadia Code, Consolas, monospace"
                            FontSize="11.5"
-                           Padding="10,7,12,7"
-                           TextWrapping="Wrap"/>
+                           LineHeight="17" LineStackingStrategy="BlockLineHeight"
+                           Padding="0,6,12,6"
+                           TextWrapping="Wrap"
+                           ToolTip="{Binding Message}"/>
             </Grid>
         </Border>
     </DataTemplate>
 
     <Style x:Key="TabPaneAnim" TargetType="Grid">
-        <Style.Triggers>
-            <Trigger Property="Visibility" Value="Visible">
-                <Trigger.EnterActions>
-                    <BeginStoryboard>
-                        <Storyboard>
-                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
-                                             From="0" To="1" Duration="0:0:0.22"/>
-                            <DoubleAnimation Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)"
-                                             From="6" To="0" Duration="0:0:0.22"/>
-                        </Storyboard>
-                    </BeginStoryboard>
-                </Trigger.EnterActions>
-            </Trigger>
-        </Style.Triggers>
-        <Setter Property="RenderTransform">
-            <Setter.Value>
-                <TranslateTransform/>
-            </Setter.Value>
-        </Setter>
+        <Setter Property="Opacity" Value="1"/>
     </Style>
 
     <Style x:Key="PageTitle" TargetType="TextBlock">
@@ -290,6 +296,45 @@
         <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
 
+    <!-- Variant of CompactComboBox tuned for the Dashboard "Upload to" pill:
+         no outline in any state (default / mouse-over / focused / pressed /
+         drop-down open) so the inner ComboBox blends into the parent Border
+         that wraps it. Built off MaterialDesignDataGridComboBox because that
+         template lacks the outlined chrome and BasedOn lets us keep the rest
+         of the look consistent with our compact controls (corner radii,
+         height, etc). -->
+    <Style x:Key="BorderlessDestinationComboBox" TargetType="ComboBox"
+           BasedOn="{StaticResource MaterialDesignDataGridComboBox}">
+        <Setter Property="md:HintAssist.IsFloating" Value="False"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderBrush" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="MinHeight" Value="32"/>
+        <Setter Property="Height" Value="32"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="BorderBrush" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+            </Trigger>
+            <Trigger Property="IsFocused" Value="True">
+                <Setter Property="BorderBrush" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+            </Trigger>
+            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter Property="BorderBrush" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+            </Trigger>
+            <Trigger Property="IsDropDownOpen" Value="True">
+                <Setter Property="BorderBrush" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
     <Style x:Key="CompactToggleSwitch" TargetType="ToggleButton"
            BasedOn="{StaticResource MaterialDesignSwitchToggleButton}">
         <Setter Property="LayoutTransform">
@@ -299,5 +344,6 @@
         </Setter>
         <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
+
 
 </ResourceDictionary>

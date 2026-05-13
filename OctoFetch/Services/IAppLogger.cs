@@ -7,7 +7,8 @@ namespace OctoFetch.Services
         Downloader,
         Settings,
         Extractor,
-        General
+        General,
+        Mitm
     }
 
     public interface IAppLogger

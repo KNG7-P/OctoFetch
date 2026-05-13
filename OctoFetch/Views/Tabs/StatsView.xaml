@@ -9,14 +9,8 @@
              mc:Ignorable="d"
              d:DataContext="{d:DesignInstance Type=vm:MainViewModel}">
 
-    <UserControl.Resources>
-        <conv:FractionToHeightConverter x:Key="FractionToHeight"/>
-    </UserControl.Resources>
-
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
@@ -29,25 +23,10 @@
             </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0">
                 <TextBlock Text="Usage" Style="{StaticResource PageTitle}"/>
-                <TextBlock Text="How much storage each server is using and how often you're downloading."
+                <TextBlock Text="How much space each cloud destination is using."
                            Style="{StaticResource PageSubtitle}"/>
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal">
-                <Button Style="{StaticResource MaterialDesignOutlinedButton}"
-                        BorderBrush="{StaticResource AccentCyanBrush}"
-                        Foreground="{StaticResource AccentCyanBrush}"
-                        md:ButtonAssist.CornerRadius="10"
-                        Padding="14,5" Margin="0,0,8,0"
-                        IsEnabled="{Binding IsImportingHistory, Converter={StaticResource InverseBool}}"
-                        Command="{Binding ImportHistoryCommand}"
-                        ToolTip="Pull the last 180 days of download history from GitHub">
-                    <StackPanel Orientation="Horizontal">
-                        <md:PackIcon Kind="DatabaseImport" Width="14" Height="14"
-                                     Margin="0,0,6,0" VerticalAlignment="Center"/>
-                        <TextBlock Text="Import history" VerticalAlignment="Center" FontSize="12"/>
-                    </StackPanel>
-                </Button>
-
                 <Button Style="{StaticResource MaterialDesignFloatingActionMiniButton}"
                         Background="{StaticResource AccentGradient}"
                         BorderBrush="{StaticResource AccentGradient}"
@@ -59,270 +38,348 @@
             </StackPanel>
         </Grid>
 
-        <!-- Cluster summary line -->
-        <md:Card Grid.Row="1" Background="{StaticResource BgCard}"
-                 UniformCornerRadius="14" Padding="20,14" Margin="0,0,0,12"
-                 md:ElevationAssist.Elevation="Dp1">
-            <TextBlock Text="{Binding ClusterStatsSummary}"
-                       Foreground="{StaticResource TextSecondary}"
-                       FontSize="13"/>
-        </md:Card>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                      Padding="0,0,4,0" CanContentScroll="False">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="12"/>
+                    <ColumnDefinition Width="320"/>
+                </Grid.ColumnDefinitions>
 
-        <!-- Daily / Weekly / Monthly chart card -->
-        <Grid Grid.Row="2" Margin="0,0,0,12">
-            <md:Card Background="{StaticResource BgCard}"
-                     UniformCornerRadius="14" Padding="18,14"
-                     md:ElevationAssist.Elevation="Dp1">
-                <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-
-                    <!-- Title + range toggle -->
-                    <Grid Grid.Row="0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-
-                        <StackPanel Grid.Column="0">
-                            <TextBlock Text="DOWNLOAD ACTIVITY"
+                <!-- =========================================================
+                     CARD 1 — Text breakdown
+                     ========================================================= -->
+                <md:Card Grid.Column="0" Background="{StaticResource BgCard}"
+                         UniformCornerRadius="14" Padding="22,20"
+                         md:ElevationAssist.Elevation="Dp0">
+                    <StackPanel>
+                        <!-- Grand total -->
+                        <StackPanel>
+                            <TextBlock Text="TOTAL STORAGE"
                                        Style="{StaticResource SectionLabel}"/>
-                            <TextBlock Text="{Binding ChartSummary}"
+                            <TextBlock Text="{Binding TotalAllBytes, Converter={StaticResource BytesToHuman}}"
+                                       Foreground="{StaticResource TextPrimary}"
+                                       FontSize="30" FontWeight="SemiBold"
+                                       Margin="0,2,0,0"/>
+                            <TextBlock Text="{Binding ClusterStatsSummary}"
                                        Foreground="{StaticResource TextMuted}"
-                                       FontSize="11.5" Margin="0,2,0,0"
+                                       FontSize="12" Margin="0,4,0,0"
                                        TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
 
-                        <StackPanel Grid.Column="1" Orientation="Horizontal"
-                                    VerticalAlignment="Center">
-                            <ToggleButton Style="{StaticResource MaterialDesignFlatPrimaryToggleButton}"
-                                          IsChecked="{Binding IsDailyChartActive, Mode=OneWay}"
-                                          Foreground="{StaticResource AccentCyanBrush}"
-                                          Margin="0,0,4,0" Padding="12,4"
-                                          Command="{Binding SelectChartRangeCommand}"
-                                          CommandParameter="Daily">
-                                <TextBlock Text="Daily" FontSize="12"/>
-                            </ToggleButton>
-                            <ToggleButton Style="{StaticResource MaterialDesignFlatPrimaryToggleButton}"
-                                          IsChecked="{Binding IsWeeklyChartActive, Mode=OneWay}"
-                                          Foreground="{StaticResource AccentCyanBrush}"
-                                          Margin="0,0,4,0" Padding="12,4"
-                                          Command="{Binding SelectChartRangeCommand}"
-                                          CommandParameter="Weekly">
-                                <TextBlock Text="Weekly" FontSize="12"/>
-                            </ToggleButton>
-                            <ToggleButton Style="{StaticResource MaterialDesignFlatPrimaryToggleButton}"
-                                          IsChecked="{Binding IsMonthlyChartActive, Mode=OneWay}"
-                                          Foreground="{StaticResource AccentCyanBrush}"
-                                          Padding="12,4"
-                                          Command="{Binding SelectChartRangeCommand}"
-                                          CommandParameter="Monthly">
-                                <TextBlock Text="Monthly" FontSize="12"/>
-                            </ToggleButton>
-                        </StackPanel>
-                    </Grid>
-
-                    <!-- Daily series -->
-                    <ItemsControl Grid.Row="1"
-                                  ItemsSource="{Binding DailyChart}"
-                                  Height="148"
-                                  Margin="0,12,0,0"
-                                  Visibility="{Binding IsDailyChartActive, Converter={StaticResource BoolToVisibility}}">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <UniformGrid Rows="1"/>
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Grid Margin="3,0" ToolTip="{Binding Tooltip}">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="*"/>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                    </Grid.RowDefinitions>
-                                    <Border Grid.Row="0" VerticalAlignment="Bottom"
-                                            Background="{StaticResource AccentGradient}"
-                                            CornerRadius="4,4,2,2"
-                                            Height="{Binding HeightFraction, Converter={StaticResource FractionToHeight}, ConverterParameter=120}"/>
-                                    <TextBlock Grid.Row="1" Text="{Binding Count}"
-                                               Foreground="{StaticResource TextPrimary}"
-                                               FontSize="10.5" FontWeight="SemiBold"
-                                               HorizontalAlignment="Center"
-                                               Margin="0,4,0,0"/>
-                                    <TextBlock Grid.Row="2" Text="{Binding Label}"
-                                               Foreground="{StaticResource TextMuted}"
-                                               FontSize="10"
-                                               HorizontalAlignment="Center"/>
-                                </Grid>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-
-                    <!-- Weekly series -->
-                    <ItemsControl Grid.Row="2"
-                                  ItemsSource="{Binding WeeklyChart}"
-                                  Height="148"
-                                  Margin="0,12,0,0"
-                                  Visibility="{Binding IsWeeklyChartActive, Converter={StaticResource BoolToVisibility}}">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <UniformGrid Rows="1"/>
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Grid Margin="3,0" ToolTip="{Binding Tooltip}">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="*"/>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                    </Grid.RowDefinitions>
-                                    <Border Grid.Row="0" VerticalAlignment="Bottom"
-                                            Background="{StaticResource AccentGradient}"
-                                            CornerRadius="4,4,2,2"
-                                            Height="{Binding HeightFraction, Converter={StaticResource FractionToHeight}, ConverterParameter=120}"/>
-                                    <TextBlock Grid.Row="1" Text="{Binding Count}"
-                                               Foreground="{StaticResource TextPrimary}"
-                                               FontSize="10.5" FontWeight="SemiBold"
-                                               HorizontalAlignment="Center"
-                                               Margin="0,4,0,0"/>
-                                    <TextBlock Grid.Row="2" Text="{Binding Label}"
-                                               Foreground="{StaticResource TextMuted}"
-                                               FontSize="10"
-                                               HorizontalAlignment="Center"/>
-                                </Grid>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-
-                    <!-- Monthly series -->
-                    <ItemsControl Grid.Row="3"
-                                  ItemsSource="{Binding MonthlyChart}"
-                                  Height="148"
-                                  Margin="0,12,0,0"
-                                  Visibility="{Binding IsMonthlyChartActive, Converter={StaticResource BoolToVisibility}}">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <UniformGrid Rows="1"/>
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Grid Margin="3,0" ToolTip="{Binding Tooltip}">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="*"/>
-                                        <RowDefinition Height="Auto"/>
-                                        <RowDefinition Height="Auto"/>
-                                    </Grid.RowDefinitions>
-                                    <Border Grid.Row="0" VerticalAlignment="Bottom"
-                                            Background="{StaticResource AccentGradient}"
-                                            CornerRadius="4,4,2,2"
-                                            Height="{Binding HeightFraction, Converter={StaticResource FractionToHeight}, ConverterParameter=120}"/>
-                                    <TextBlock Grid.Row="1" Text="{Binding Count}"
-                                               Foreground="{StaticResource TextPrimary}"
-                                               FontSize="10.5" FontWeight="SemiBold"
-                                               HorizontalAlignment="Center"
-                                               Margin="0,4,0,0"/>
-                                    <TextBlock Grid.Row="2" Text="{Binding Label}"
-                                               Foreground="{StaticResource TextMuted}"
-                                               FontSize="10"
-                                               HorizontalAlignment="Center"/>
-                                </Grid>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                </Grid>
-            </md:Card>
-
-            <!-- Loader overlay during cluster-stats refresh -->
-            <Border Background="#CC0F0F18"
-                    CornerRadius="14"
-                    Visibility="{Binding IsRefreshingStats, Converter={StaticResource BoolToVisibility}}">
-                <StackPanel Orientation="Vertical"
-                            HorizontalAlignment="Center"
-                            VerticalAlignment="Center">
-                    <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
-                                 Foreground="{StaticResource AccentCyanBrush}"
-                                 Width="40" Height="40"
-                                 IsIndeterminate="True" Value="0"/>
-                    <TextBlock Text="Refreshing stats…"
-                               Foreground="{StaticResource TextPrimary}"
-                               FontSize="13" FontWeight="SemiBold"
-                               HorizontalAlignment="Center"
-                               Margin="0,10,0,0"/>
-                </StackPanel>
-            </Border>
-            
-            <Border Background="#CC0F0F18"
-                    CornerRadius="14"
-                    Visibility="{Binding IsImportingHistory, Converter={StaticResource BoolToVisibility}}">
-                <StackPanel Orientation="Vertical"
-                            HorizontalAlignment="Center"
-                            VerticalAlignment="Center">
-                    <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
-                                 Foreground="{StaticResource AccentCyanBrush}"
-                                 Width="40" Height="40"
-                                 IsIndeterminate="True" Value="0"/>
-                    <TextBlock Text="Importing history from GitHub…"
-                               Foreground="{StaticResource TextPrimary}"
-                               FontSize="13" FontWeight="SemiBold"
-                               HorizontalAlignment="Center"
-                               Margin="0,10,0,0"/>
-                    <TextBlock Text="Reading the last 180 days of commits."
-                               Foreground="{StaticResource TextMuted}"
-                               FontSize="11"
-                               HorizontalAlignment="Center"
-                               Margin="0,2,0,0"/>
-                </StackPanel>
-            </Border>
-        </Grid>
-
-        <!-- Per-server breakdown -->
-        <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto" Padding="0,0,8,0">
-            <ItemsControl ItemsSource="{Binding ClusterStats}" Margin="0,0,4,0">
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                        <md:Card Background="{StaticResource BgCard}"
-                                 UniformCornerRadius="12" Padding="16,12"
-                                 Margin="0,0,0,8"
-                                 md:ElevationAssist.Elevation="Dp1">
+                        <!-- Three KPI rows (Drive / GitHub / Releases) -->
+                        <Border Background="{StaticResource BgCardElevated}"
+                                CornerRadius="12" Padding="16,12"
+                                Margin="0,18,0,0">
                             <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <StackPanel Grid.Column="0" Orientation="Horizontal">
-                                    <Ellipse Width="10" Height="10" Margin="0,0,10,0"
-                                             VerticalAlignment="Center"
-                                             Fill="{Binding BadgeColor, Converter={StaticResource StringToBrush}}"/>
-                                    <StackPanel VerticalAlignment="Center">
-                                        <TextBlock Text="{Binding RepoName}"
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <!-- Google Drive -->
+                                <Grid Grid.Row="0" Margin="0,4"
+                                      Visibility="{Binding IsDriveSpaceVisible, Converter={StaticResource BoolToVisibility}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Ellipse Grid.Column="0" Width="10" Height="10"
+                                             Margin="0,0,12,0" VerticalAlignment="Center"
+                                             Fill="{StaticResource AccentPurpleBrush}"/>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="Google Drive"
                                                    Foreground="{StaticResource TextPrimary}"
                                                    FontSize="13" FontWeight="SemiBold"/>
                                         <TextBlock Foreground="{StaticResource TextMuted}"
                                                    FontSize="11">
-                                            <Run Text="{Binding FolderCount}"/>
-                                            <Run Text="folder(s) ·"/>
-                                            <Run Text="{Binding FileCount}"/>
+                                            <Run Text="{Binding DriveSpaceAccountLabel, Mode=OneWay}"/>
+                                            <Run Text="·"/>
+                                            <Run Text="{Binding TotalDriveFiles, Mode=OneWay}"/>
                                             <Run Text="file(s)"/>
                                         </TextBlock>
                                     </StackPanel>
-                                </StackPanel>
-                                <TextBlock Grid.Column="1"
-                                           Foreground="{StaticResource AccentCyanBrush}"
-                                           FontSize="13" FontWeight="Bold"
-                                           VerticalAlignment="Center"
-                                           Text="{Binding TotalBytes, Converter={StaticResource BytesToHuman}}"/>
+                                    <TextBlock Grid.Column="2" VerticalAlignment="Center"
+                                               Foreground="{StaticResource AccentPurpleBrush}"
+                                               FontSize="13" FontWeight="Bold"
+                                               Text="{Binding TotalDriveBytes, Converter={StaticResource BytesToHuman}}"/>
+                                </Grid>
+
+                                <!-- 'Drive not connected' hint -->
+                                <Grid Grid.Row="0" Margin="0,4"
+                                      Visibility="{Binding IsDriveSpaceVisible, Converter={StaticResource InverseBoolToVisibility}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Ellipse Grid.Column="0" Width="10" Height="10"
+                                             Margin="0,0,12,0" VerticalAlignment="Center"
+                                             Fill="#FF3A3A4A"/>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="Google Drive"
+                                                   Foreground="{StaticResource TextSecondary}"
+                                                   FontSize="13" FontWeight="SemiBold"/>
+                                        <TextBlock Text="Not connected"
+                                                   Foreground="{StaticResource TextMuted}"
+                                                   FontSize="11"/>
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="2" VerticalAlignment="Center"
+                                               Foreground="{StaticResource TextMuted}"
+                                               FontSize="13" FontWeight="Bold"
+                                               Text="—"/>
+                                </Grid>
+
+                                <!-- GitHub (chunks committed under downloads/) -->
+                                <Grid Grid.Row="1" Margin="0,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Ellipse Grid.Column="0" Width="10" Height="10"
+                                             Margin="0,0,12,0" VerticalAlignment="Center"
+                                             Fill="{StaticResource AccentCyanBrush}"/>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="GitHub (chunks)"
+                                                   Foreground="{StaticResource TextPrimary}"
+                                                   FontSize="13" FontWeight="SemiBold"/>
+                                        <TextBlock Foreground="{StaticResource TextMuted}"
+                                                   FontSize="11">
+                                            <Run Text="across"/>
+                                            <Run Text="{Binding ClusterStats.Count, Mode=OneWay}"/>
+                                            <Run Text="server(s) ·"/>
+                                            <Run Text="{Binding TotalGitHubFiles, Mode=OneWay}"/>
+                                            <Run Text="file(s)"/>
+                                        </TextBlock>
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="2" VerticalAlignment="Center"
+                                               Foreground="{StaticResource AccentCyanBrush}"
+                                               FontSize="13" FontWeight="Bold"
+                                               Text="{Binding TotalGitHubBytes, Converter={StaticResource BytesToHuman}}"/>
+                                </Grid>
+
+                                <!-- GitHub Releases -->
+                                <Grid Grid.Row="2" Margin="0,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Ellipse Grid.Column="0" Width="10" Height="10"
+                                             Margin="0,0,12,0" VerticalAlignment="Center"
+                                             Fill="{StaticResource WarningBrush}"/>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="GitHub Releases"
+                                                   Foreground="{StaticResource TextPrimary}"
+                                                   FontSize="13" FontWeight="SemiBold"/>
+                                        <TextBlock Foreground="{StaticResource TextMuted}"
+                                                   FontSize="11">
+                                            <Run Text="{Binding TotalReleaseFiles, Mode=OneWay}"/>
+                                            <Run Text="asset(s) across all servers"/>
+                                        </TextBlock>
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="2" VerticalAlignment="Center"
+                                               Foreground="{StaticResource WarningBrush}"
+                                               FontSize="13" FontWeight="Bold"
+                                               Text="{Binding TotalReleaseBytes, Converter={StaticResource BytesToHuman}}"/>
+                                </Grid>
                             </Grid>
-                        </md:Card>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
+                        </Border>
+
+                        <!-- Per-account (per-node) breakdown -->
+                        <TextBlock Text="PER ACCOUNT"
+                                   Style="{StaticResource SectionLabel}"
+                                   Margin="0,20,0,8"/>
+
+                        <ItemsControl ItemsSource="{Binding ClusterStats}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="{StaticResource BgCardElevated}"
+                                            CornerRadius="10" Padding="14,10"
+                                            Margin="0,0,0,6">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Ellipse Grid.Column="0" Width="9" Height="9"
+                                                     Margin="0,0,12,0" VerticalAlignment="Center"
+                                                     Fill="{Binding BadgeColor, Converter={StaticResource StringToBrush}}"/>
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding RepoName}"
+                                                           Foreground="{StaticResource TextPrimary}"
+                                                           FontSize="12.5" FontWeight="SemiBold"/>
+                                                <TextBlock Foreground="{StaticResource TextMuted}"
+                                                           FontSize="10.5">
+                                                    <Run Text="{Binding FileCount, Mode=OneWay}"/>
+                                                    <Run Text="chunk(s) ·"/>
+                                                    <Run Text="{Binding ReleaseFileCount, Mode=OneWay}"/>
+                                                    <Run Text="release(s)"/>
+                                                </TextBlock>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2" VerticalAlignment="Center"
+                                                        HorizontalAlignment="Right">
+                                                <TextBlock Foreground="{StaticResource AccentCyanBrush}"
+                                                           FontSize="12.5" FontWeight="Bold"
+                                                           HorizontalAlignment="Right"
+                                                           Text="{Binding TotalBytes, Converter={StaticResource BytesToHuman}}"/>
+                                                <TextBlock Foreground="{StaticResource WarningBrush}"
+                                                           FontSize="10.5"
+                                                           HorizontalAlignment="Right"
+                                                           Text="{Binding ReleaseBytes, Converter={StaticResource BytesToHuman}}"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </md:Card>
+
+                <!-- =========================================================
+                     CARD 2 — Donut chart
+                     ========================================================= -->
+                <md:Card Grid.Column="2" Background="{StaticResource BgCard}"
+                         UniformCornerRadius="14" Padding="22,20"
+                         md:ElevationAssist.Elevation="Dp0"
+                         VerticalAlignment="Top">
+                    <Grid>
+                    <StackPanel>
+                        <TextBlock Text="STORAGE SPLIT"
+                                   Style="{StaticResource SectionLabel}"/>
+                        <TextBlock Text="Share of total space by destination"
+                                   Foreground="{StaticResource TextMuted}"
+                                   FontSize="11.5" Margin="0,2,0,0"/>
+
+                        <!-- Donut canvas -->
+                            <Grid Width="220" Height="220" Margin="0,18,0,4">
+                                <Ellipse Width="180" Height="180"
+                                     HorizontalAlignment="Center"
+                                     VerticalAlignment="Center"
+                                     Stroke="#FF252533" StrokeThickness="2"
+                                     Fill="Transparent"/>
+                            <Ellipse Width="112" Height="112"
+                                     HorizontalAlignment="Center"
+                                     VerticalAlignment="Center"
+                                     Stroke="#FF252533" StrokeThickness="1"
+                                     Fill="Transparent"/>
+
+                            <Canvas Width="180" Height="180"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center">
+                                <Path Data="{Binding DriveSliceGeometry}"
+                                      Fill="{StaticResource AccentPurpleBrush}"/>
+                                <Path Data="{Binding GitHubSliceGeometry}"
+                                      Fill="{StaticResource AccentCyanBrush}"/>
+                                <Path Data="{Binding ReleaseSliceGeometry}"
+                                      Fill="{StaticResource WarningBrush}"/>
+                            </Canvas>
+
+                            <!-- Centre label -->
+                            <StackPanel HorizontalAlignment="Center"
+                                        VerticalAlignment="Center">
+                                <TextBlock Text="TOTAL"
+                                           Foreground="{StaticResource TextMuted}"
+                                           FontSize="9.5" FontWeight="Bold"
+                                           HorizontalAlignment="Center"/>
+                                <TextBlock Text="{Binding TotalAllBytes, Converter={StaticResource BytesToHuman}}"
+                                           Foreground="{StaticResource TextPrimary}"
+                                           FontSize="17" FontWeight="SemiBold"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,2,0,0"/>
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- Empty-state ribbon -->
+                        <TextBlock Text="No uploads yet — the slices fill in after your first cloud transfer."
+                                   Foreground="{StaticResource TextMuted}"
+                                   FontSize="11" TextWrapping="Wrap"
+                                   HorizontalAlignment="Center" TextAlignment="Center"
+                                   Margin="0,4,0,4"
+                                   Visibility="{Binding IsUsageEmpty, Converter={StaticResource BoolToVisibility}}"/>
+
+                        <!-- Legend -->
+                        <StackPanel Margin="0,12,0,0">
+                            <Grid Margin="0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Ellipse Grid.Column="0" Width="10" Height="10"
+                                         Margin="0,0,10,0" VerticalAlignment="Center"
+                                         Fill="{StaticResource AccentPurpleBrush}"/>
+                                <TextBlock Grid.Column="1" Text="Google Drive"
+                                           Foreground="{StaticResource TextSecondary}"
+                                           FontSize="12.5" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="2" Text="{Binding DrivePercentLabel}"
+                                           Foreground="{StaticResource TextPrimary}"
+                                           FontSize="12.5" FontWeight="SemiBold"
+                                           VerticalAlignment="Center"/>
+                            </Grid>
+                            <Grid Margin="0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Ellipse Grid.Column="0" Width="10" Height="10"
+                                         Margin="0,0,10,0" VerticalAlignment="Center"
+                                         Fill="{StaticResource AccentCyanBrush}"/>
+                                <TextBlock Grid.Column="1" Text="GitHub (chunks)"
+                                           Foreground="{StaticResource TextSecondary}"
+                                           FontSize="12.5" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="2" Text="{Binding GitHubPercentLabel}"
+                                           Foreground="{StaticResource TextPrimary}"
+                                           FontSize="12.5" FontWeight="SemiBold"
+                                           VerticalAlignment="Center"/>
+                            </Grid>
+                            <Grid Margin="0,3">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Ellipse Grid.Column="0" Width="10" Height="10"
+                                         Margin="0,0,10,0" VerticalAlignment="Center"
+                                         Fill="{StaticResource WarningBrush}"/>
+                                <TextBlock Grid.Column="1" Text="GitHub Releases"
+                                           Foreground="{StaticResource TextSecondary}"
+                                           FontSize="12.5" VerticalAlignment="Center"/>
+                                <TextBlock Grid.Column="2" Text="{Binding ReleasePercentLabel}"
+                                           Foreground="{StaticResource TextPrimary}"
+                                           FontSize="12.5" FontWeight="SemiBold"
+                                           VerticalAlignment="Center"/>
+                            </Grid>
+                        </StackPanel>
+
+                    </StackPanel>
+
+                    <Border Background="#CC0F0F18"
+                            CornerRadius="14" Margin="-22,-20,-22,-20"
+                            Visibility="{Binding IsRefreshingStats, Converter={StaticResource BoolToVisibility}}">
+                        <StackPanel Orientation="Vertical"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center">
+                            <ProgressBar Style="{StaticResource MaterialDesignCircularProgressBar}"
+                                         IsIndeterminate="True"
+                                         Foreground="{StaticResource AccentCyanBrush}"
+                                         Width="36" Height="36"/>
+                            <TextBlock Text="Refreshing stats…"
+                                       Foreground="{StaticResource TextPrimary}"
+                                       FontSize="13" FontWeight="SemiBold"
+                                       HorizontalAlignment="Center"
+                                       Margin="0,10,0,0"/>
+                        </StackPanel>
+                    </Border>
+                    </Grid>
+                </md:Card>
+            </Grid>
         </ScrollViewer>
     </Grid>
 </UserControl>

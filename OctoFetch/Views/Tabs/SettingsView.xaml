@@ -12,19 +12,42 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Margin="0,0,0,16">
-            <TextBlock Text="Servers" Style="{StaticResource PageTitle}"/>
-            <TextBlock Text="Each server is a free GitHub account that does the heavy lifting in parallel."
-                       Style="{StaticResource PageSubtitle}"/>
-        </StackPanel>
+        <Grid Grid.Row="0" Margin="0,0,0,16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0">
+                <TextBlock Text="Settings" Style="{StaticResource PageTitle}"/>
+                <TextBlock Text="Each server is a free GitHub account that does the heavy lifting in parallel."
+                           Style="{StaticResource PageSubtitle}"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button Style="{StaticResource MaterialDesignOutlinedButton}"
+                        BorderBrush="{StaticResource BorderBrushDefault}"
+                        Foreground="{StaticResource TextSecondary}"
+                        md:ButtonAssist.CornerRadius="10"
+                        Padding="14,6"
+                        Click="BtnOpenDownloadSettings_Click"
+                        ToolTip="Concurrent downloads, output folder, and default upload destination">
+                    <StackPanel Orientation="Horizontal">
+                        <md:PackIcon Kind="CogOutline" Width="14" Height="14"
+                                     Margin="0,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="Other settings" VerticalAlignment="Center"
+                                   FontSize="12.5" FontWeight="SemiBold"/>
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Grid>
 
         <md:Card Grid.Row="1" Background="{StaticResource BgCard}"
                  UniformCornerRadius="14" Padding="20,18" Margin="0,0,0,12"
-                 md:ElevationAssist.Elevation="Dp1"
+                 md:ElevationAssist.Elevation="Dp0"
                  DataContext="{Binding NodeManagement}">
             <StackPanel>
                 <TextBlock Text="ADD A SERVER" Style="{StaticResource SectionLabel}"/>
@@ -63,7 +86,232 @@
             </StackPanel>
         </md:Card>
 
-        <Grid Grid.Row="2">
+        <!-- ============================ Drive + MITM row ============================ -->
+        <Grid Grid.Row="2" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="12"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Google Drive card -->
+            <md:Card Grid.Column="0" Background="{StaticResource BgCard}"
+                     UniformCornerRadius="14" Padding="18,16"
+                     md:ElevationAssist.Elevation="Dp0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Header row -->
+                    <Grid Grid.Row="0" Margin="0,0,0,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" Width="40" Height="40" CornerRadius="20"
+                                Background="#FF1A2A52" BorderBrush="#FF3B82F6" BorderThickness="1"
+                                Margin="0,0,12,0">
+                            <md:PackIcon Kind="GoogleDrive" Width="20" Height="20"
+                                         Foreground="#FF3B82F6"
+                                         HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock Text="GOOGLE DRIVE" Style="{StaticResource SectionLabel}"
+                                       Margin="0,0,0,2"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse Width="8" Height="8"
+                                         Fill="{Binding DriveStatusColor, Converter={StaticResource StringToBrush}}"
+                                         VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="{Binding DriveStatusText}"
+                                           Foreground="{Binding DriveStatusColor, Converter={StaticResource StringToBrush}}"
+                                           FontSize="12.5" FontWeight="SemiBold"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBlock Grid.Row="1" Text="{Binding DriveAccountText}"
+                               Foreground="{StaticResource TextSecondary}" FontSize="12"
+                               TextTrimming="CharacterEllipsis"
+                               VerticalAlignment="Top"/>
+
+                    <!-- Action buttons -->
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
+                        <Button Style="{StaticResource MaterialDesignRaisedButton}"
+                                Background="#FF3B82F6"
+                                BorderBrush="#FF3B82F6"
+                                Foreground="White"
+                                md:ButtonAssist.CornerRadius="10"
+                                Padding="14,6" Margin="0,0,8,0"
+                                Command="{Binding ConnectDriveCommand}">
+                            <Grid HorizontalAlignment="Center">
+                                <!-- Idle -->
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <StackPanel.Style>
+                                        <Style TargetType="StackPanel">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsDriveConnecting}" Value="True">
+                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </StackPanel.Style>
+                                    <md:PackIcon Kind="Link" Width="13" Height="13"
+                                                 VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                    <TextBlock Text="Connect"
+                                               VerticalAlignment="Center" FontWeight="SemiBold" FontSize="12"/>
+                                </StackPanel>
+
+                                <!-- Busy: "Connecting" + three pulsing dots -->
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <StackPanel.Style>
+                                        <Style TargetType="StackPanel">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsDriveConnecting}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </StackPanel.Style>
+                                    <TextBlock Text="Connecting" VerticalAlignment="Center"
+                                               FontWeight="SemiBold" FontSize="12"
+                                               Margin="0,0,6,0"/>
+                                    <Ellipse Width="4" Height="4" Fill="White"
+                                             VerticalAlignment="Center" Margin="2,0,0,0"
+                                             Opacity="0.35">
+                                        <Ellipse.Triggers>
+                                            <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                                <BeginStoryboard>
+                                                    <Storyboard RepeatBehavior="Forever">
+                                                        <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                         From="0.35" To="1.0"
+                                                                         Duration="0:0:0.45"
+                                                                         AutoReverse="True"/>
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </EventTrigger>
+                                        </Ellipse.Triggers>
+                                    </Ellipse>
+                                    <Ellipse Width="4" Height="4" Fill="White"
+                                             VerticalAlignment="Center" Margin="3,0,0,0"
+                                             Opacity="0.35">
+                                        <Ellipse.Triggers>
+                                            <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                                <BeginStoryboard>
+                                                    <Storyboard RepeatBehavior="Forever" BeginTime="0:0:0.15">
+                                                        <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                         From="0.35" To="1.0"
+                                                                         Duration="0:0:0.45"
+                                                                         AutoReverse="True"/>
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </EventTrigger>
+                                        </Ellipse.Triggers>
+                                    </Ellipse>
+                                    <Ellipse Width="4" Height="4" Fill="White"
+                                             VerticalAlignment="Center" Margin="3,0,0,0"
+                                             Opacity="0.35">
+                                        <Ellipse.Triggers>
+                                            <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                                <BeginStoryboard>
+                                                    <Storyboard RepeatBehavior="Forever" BeginTime="0:0:0.3">
+                                                        <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                         From="0.35" To="1.0"
+                                                                         Duration="0:0:0.45"
+                                                                         AutoReverse="True"/>
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </EventTrigger>
+                                        </Ellipse.Triggers>
+                                    </Ellipse>
+                                </StackPanel>
+                            </Grid>
+                        </Button>
+                        <Button Style="{StaticResource MaterialDesignOutlinedButton}"
+                                BorderBrush="{StaticResource DangerBrush}"
+                                Foreground="{StaticResource DangerBrush}"
+                                md:ButtonAssist.CornerRadius="10"
+                                Padding="12,6"
+                                Command="{Binding DisconnectDriveCommand}">
+                            <StackPanel Orientation="Horizontal">
+                                <md:PackIcon Kind="LinkOff" Width="13" Height="13"
+                                             VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Disconnect"
+                                           VerticalAlignment="Center" FontWeight="SemiBold" FontSize="12"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </md:Card>
+
+            <!-- MITM engine card -->
+            <md:Card Grid.Column="2" Background="{StaticResource BgCard}"
+                     UniformCornerRadius="14" Padding="18,16"
+                     md:ElevationAssist.Elevation="Dp0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Header row -->
+                    <Grid Grid.Row="0" Margin="0,0,0,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Column="0" Width="40" Height="40" CornerRadius="20"
+                                Background="#FF2A1A52" BorderBrush="#FF8B5CF6" BorderThickness="1"
+                                Margin="0,0,12,0">
+                            <md:PackIcon Kind="ShieldKey" Width="20" Height="20"
+                                         Foreground="#FF8B5CF6"
+                                         HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                            <TextBlock Text="MITM ENGINE" Style="{StaticResource SectionLabel}"
+                                       Margin="0,0,0,2"/>
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse Width="8" Height="8"
+                                         Fill="{Binding MitmStatusColor, Converter={StaticResource StringToBrush}}"
+                                         VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="{Binding MitmStatusText}"
+                                           Foreground="{Binding MitmStatusColor, Converter={StaticResource StringToBrush}}"
+                                           FontSize="12.5" FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Action button -->
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
+                        <Button Style="{StaticResource MaterialDesignRaisedButton}"
+                                Background="#FF8B5CF6"
+                                BorderBrush="#FF8B5CF6"
+                                Foreground="White"
+                                md:ButtonAssist.CornerRadius="10"
+                                Padding="14,6"
+                                Command="{Binding OpenMitmSettingsCommand}">
+                            <StackPanel Orientation="Horizontal">
+                                <md:PackIcon Kind="CogOutline" Width="13" Height="13"
+                                             VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                <TextBlock Text="Configure engine"
+                                           VerticalAlignment="Center" FontWeight="SemiBold" FontSize="12"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </md:Card>
+        </Grid>
+
+        <!-- Download settings -->
+        <Grid Grid.Row="3">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="380"/>
@@ -71,7 +319,7 @@
 
             <md:Card Grid.Column="0" Background="{StaticResource BgCard}"
                      UniformCornerRadius="14" Padding="6"
-                     md:ElevationAssist.Elevation="Dp1"
+                     md:ElevationAssist.Elevation="Dp0"
                      DataContext="{Binding NodeManagement}">
                 <ListView Background="Transparent" BorderThickness="0"
                           ItemsSource="{Binding Nodes}">
@@ -144,7 +392,7 @@
             <md:Card Grid.Column="1" Margin="12,0,0,0"
                      Background="{StaticResource BgCard}"
                      UniformCornerRadius="14" Padding="0"
-                     md:ElevationAssist.Elevation="Dp1">
+                     md:ElevationAssist.Elevation="Dp0">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -175,17 +423,41 @@
                             </StackPanel>
                         </Button>
                     </Grid>
-                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
-                                  Padding="14,12,6,14">
-                        <ItemsControl Margin="8,0,8,0"
-                                      ItemsSource="{Binding DataContext.SettingsLogs, RelativeSource={RelativeSource AncestorType=Window}}"
-                                      ItemTemplate="{StaticResource LogEntryTemplate}"/>
-                    </ScrollViewer>
+                    <ListBox Grid.Row="1"
+                             ItemsSource="{Binding DataContext.SettingsLogs, RelativeSource={RelativeSource AncestorType=Window}}"
+                             ItemTemplate="{StaticResource LogEntryTemplate}"
+                             Background="Transparent" BorderThickness="0"
+                             Padding="14,12,6,14" Margin="8,0,8,0"
+                             VirtualizingPanel.IsVirtualizing="True"
+                             VirtualizingPanel.VirtualizationMode="Recycling"
+                             VirtualizingPanel.ScrollUnit="Pixel"
+                             ScrollViewer.PanningMode="VerticalOnly"
+                             ScrollViewer.IsDeferredScrollingEnabled="False"
+                             ScrollViewer.CanContentScroll="True"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             SelectionMode="Single"
+                             Focusable="False">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="Background" Value="Transparent"/>
+                                <Setter Property="Padding" Value="0"/>
+                                <Setter Property="Margin" Value="0"/>
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ListBoxItem">
+                                            <ContentPresenter/>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                    </ListBox>
                 </Grid>
             </md:Card>
         </Grid>
 
-        <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,12,0,0"
+        <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,12,0,0"
                     HorizontalAlignment="Right"
                     DataContext="{Binding NodeManagement}">
             <Button Style="{StaticResource MaterialDesignOutlinedButton}"

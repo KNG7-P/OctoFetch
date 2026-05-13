@@ -36,6 +36,7 @@ namespace OctoFetch.ViewModels
 
         public Func<string?>? NewTokenProvider { get; set; }
         public Action? ClearNewTokenInput { get; set; }
+        public Func<CloudNode, string?>? CheckNodeInUse { get; set; }
 
         [RelayCommand]
         private void AddNode()
@@ -57,6 +58,19 @@ namespace OctoFetch.ViewModels
         private void RemoveNode(CloudNode? node)
         {
             if (node is null) return;
+            var inUseReason = CheckNodeInUse?.Invoke(node);
+            if (!string.IsNullOrWhiteSpace(inUseReason))
+            {
+                var result = MessageBox.Show(
+                    $"This node is currently in use by {inUseReason}.\n\n" +
+                    "Removing it now may interrupt the operation and produce errors.\n\n" +
+                    "Remove anyway?",
+                    "Node is in use",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning);
+                if (result != MessageBoxResult.Yes) return;
+            }
+
             Nodes.Remove(node);
             _gitHubService.RemoveNode(node);
             _logger.Log(LogChannel.Settings, $"Removed node: {node.RepoName}");

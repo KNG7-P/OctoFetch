@@ -40,10 +40,7 @@
         <GradientStop Color="{StaticResource Brand.AccentPurple}" Offset="1" />
     </LinearGradientBrush>
 
-    <LinearGradientBrush x:Key="WindowBackdrop" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="#FF0B0B11" Offset="0" />
-        <GradientStop Color="#FF111119" Offset="1" />
-    </LinearGradientBrush>
+    <SolidColorBrush x:Key="WindowBackdrop" Color="#FF0E0E16" />
 
     <FontFamily x:Key="BrandFont">Inter, Segoe UI, system</FontFamily>
 

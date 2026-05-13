@@ -1,0 +1,250 @@
+# OctoFetch-YouTube-Version: 4
+
+name: 'YouTube Download Engine'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'YouTube video URL'
+        required: true
+        type: string
+      folder_name:
+        required: true
+        type: string
+      output_format:
+        description: 'mp4 or mp3'
+        required: false
+        type: string
+        default: 'mp4'
+      desired_quality:
+        description: 'Video quality (720p, 1080p) or audio bitrate (128kbps, 192kbps, 320kbps)'
+        required: false
+        type: string
+        default: '720p'
+      chunk_size:
+        required: false
+        type: string
+        default: "45M"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: yt-${{ github.event.inputs.folder_name }}
+  cancel-in-progress: false
+
+jobs:
+  youtube-download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+
+      # Sparse + blob:none checkout. Node repos are loaded up with prior
+      # download chunks (.zip.NNN, potentially many GBs), so a normal
+      # `actions/checkout@v4` spends ~1m fetching blobs we never read.
+      # We only need a working git directory to commit + push new files;
+      # `filter: blob:none` skips downloading any existing blobs, and
+      # sparse-checkout limits the working tree to .github/.
+      - name: Checkout Repository (sparse, fast)
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            .github
+          sparse-checkout-cone-mode: false
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y zip curl python3 python3-pip
+          pip3 install --quiet requests
+
+      - name: Resolve download link
+        id: retrieve
+        env:
+          INPUT_URL: ${{ github.event.inputs.video_url }}
+          INPUT_FORMAT: ${{ github.event.inputs.output_format }}
+          INPUT_QUALITY: ${{ github.event.inputs.desired_quality }}
+        run: |
+          python3 << 'EOF'
+          import os, sys, time, re, requests
+
+          URL  = os.environ.get('INPUT_URL', '')
+          FMT  = os.environ.get('INPUT_FORMAT', 'mp4')
+          QUAL = os.environ.get('INPUT_QUALITY', '720p')
+
+          is_audio = FMT == 'mp3'
+          if is_audio:
+              QUAL = QUAL if QUAL in ('64kbps','128kbps','192kbps','320kbps') else '192kbps'
+          else:
+              QUAL = QUAL if QUAL in ('360p','480p','720p','1080p') else '720p'
+
+          payload = {
+              "url": URL,
+              "os": "linux",
+              "output": {"type": "audio" if is_audio else "video", "format": FMT}
+          }
+          if is_audio:
+              payload["audio"] = {"bitrate": QUAL}
+          else:
+              payload["output"]["quality"] = QUAL
+
+          s = requests.Session()
+          s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+          s.get("https://media.ytmp3.gg/")
+
+          resp = s.post("https://hub.ytconvert.org/api/download", json=payload, timeout=30)
+          resp.raise_for_status()
+          data = resp.json()
+
+          status_url = data.get('statusUrl')
+          title = data.get('title', 'video')
+
+          print(f"Waiting for conversion: {title}")
+          dl_url = None
+          for _ in range(150):
+              time.sleep(2)
+              r = s.get(status_url, timeout=20)
+              status = r.json()
+              if status.get('status') == 'completed':
+                  dl_url = status.get('downloadUrl')
+                  break
+              if status.get('status') == 'failed':
+                  print("::error::Server failed to prepare the video")
+                  sys.exit(1)
+
+          if not dl_url:
+              print("::error::Could not get download link")
+              sys.exit(1)
+
+          vid   = re.search(r'(?:v=|youtu\.be/)([a-zA-Z0-9_-]{11})', URL)
+          vid   = vid[1] if vid else 'unknown'
+          clean = re.sub(r'[^a-zA-Z0-9\-_()\[\]]', '_', title.replace(' ', '_'))
+          clean = re.sub(r'_+', '_', clean).strip('_')[:70] or vid
+          clean = clean.lstrip('-')
+          fname = f"{clean}_{vid}_{QUAL}.{FMT}"
+
+          with open(".download_info", "w", encoding="utf-8") as f:
+              f.write(f"{dl_url}\n{fname}\n{title}")
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"filename={fname}\n")
+              f.write(f"title={title}\n")
+          EOF
+
+      - name: Download File
+        run: |
+          DL_URL=$(head -1 .download_info)
+          FILENAME=$(sed -n '2p' .download_info)
+          mkdir -p temp_download
+          echo "Downloading: $FILENAME"
+          curl -L --fail --retry 3 --progress-bar \
+            -o "temp_download/$FILENAME" "$DL_URL"
+          if [ ! -s "temp_download/$FILENAME" ]; then
+            echo "::error::Downloaded file is empty!"
+            exit 1
+          fi
+
+      - name: Split and organize
+        env:
+          FOLDER_INPUT: ${{ github.event.inputs.folder_name }}
+          CHUNK_SIZE: ${{ github.event.inputs.chunk_size }}
+        run: |
+          set -euo pipefail
+
+          FOLDER=$(printf '%s' "$FOLDER_INPUT" | tr -c 'A-Za-z0-9._-' '_')
+          [ ${#FOLDER} -gt 100 ] && FOLDER="${FOLDER:0:100}"
+          [ -z "$FOLDER" ] && FOLDER="YT_$(date +%Y%m%d%H%M%S)"
+          echo "FOLDER=$FOLDER" >> "$GITHUB_ENV"
+
+          FILENAME=$(ls temp_download/)
+          mkdir -p wrap_dir
+          mv "temp_download/$FILENAME" "wrap_dir/$FILENAME"
+          (
+            cd wrap_dir
+            zip -0 "../$FOLDER.zip" "$FILENAME"
+          )
+
+          mkdir -p "downloads/$FOLDER"
+          split -b "$CHUNK_SIZE" -d -a 3 "$FOLDER.zip" "downloads/$FOLDER/chunk_"
+
+          (
+            cd "downloads/$FOLDER"
+            a=1
+            for i in chunk_*; do
+              new=$(printf "%s.zip.%03d" "$FOLDER" "$a")
+              mv -- "$i" "$new"
+              a=$((a + 1))
+            done
+            sha256sum *.zip.* > checksums.sha256
+          )
+
+      - name: Commit and push
+        env:
+          BATCH_SIZE: 5
+        run: |
+          set -euo pipefail
+
+          git config user.name "OctoFetchBot"
+          git config user.email "bot@octofetch.local"
+          git config http.postBuffer 524288000
+          git config http.lowSpeedLimit 1000
+          git config http.lowSpeedTime 600
+
+          mapfile -t CHUNKS < <(ls "downloads/$FOLDER"/*.zip.* 2>/dev/null | sort)
+          ALL_FILES=( "${CHUNKS[@]}" "downloads/$FOLDER/checksums.sha256" )
+
+          TOTAL=${#ALL_FILES[@]}
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "Nothing to commit." >&2
+            exit 1
+          fi
+
+          push_with_retry() {
+            local label="$1"
+            for attempt in 1 2 3 4 5 6 7; do
+              git fetch origin >/dev/null 2>&1 || true
+              git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)" >/dev/null 2>&1 || true
+              if git push; then
+                echo "  OK $label pushed on attempt $attempt"
+                return 0
+              fi
+              backoff=$((attempt * 5))
+              echo "  retry in ${backoff}s ($label, attempt $attempt)..."
+              sleep "$backoff"
+            done
+            echo "  FAILED $label after 7 attempts" >&2
+            return 1
+          }
+
+          batch_n=0
+          for ((i=0; i<TOTAL; i+=BATCH_SIZE)); do
+            batch_n=$((batch_n + 1))
+            slice=( "${ALL_FILES[@]:i:BATCH_SIZE}" )
+            echo "Batch $batch_n: ${#slice[@]} file(s)"
+
+            # --sparse lets git stage paths outside the sparse-checkout cone.
+            # We sparse-checkout only .github above, but the downloads we just
+            # produced live under downloads/$FOLDER/ — those are new files
+            # (no blobs to fetch), so allowing them via --sparse is safe.
+            git add --sparse -- "${slice[@]}"
+            if git diff --cached --quiet; then
+              echo "  nothing staged for batch $batch_n, skipping."
+              continue
+            fi
+
+            git commit -m "Add $FOLDER (batch $batch_n)"
+            push_with_retry "batch $batch_n" || exit 1
+          done
+
+          echo "All batches pushed ($batch_n total)."
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf temp_download wrap_dir .download_info *.zip 2>/dev/null || true

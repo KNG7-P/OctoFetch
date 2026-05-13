@@ -1,0 +1,370 @@
+# OctoFetch-Release-Version: 3
+
+name: 'GitHub Release Upload Engine'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: 'Direct file URL to download and attach to the release'
+        required: true
+        type: string
+      folder_name:
+        description: 'Folder identifier used for the links manifest path'
+        required: true
+        type: string
+      release_tag:
+        description: 'Tag name for the GitHub release (created if absent)'
+        required: true
+        type: string
+      release_title:
+        description: 'Release title shown on GitHub (defaults to the tag)'
+        required: false
+        type: string
+        default: ''
+      safe_mode:
+        description: 'Replace the source filename with the sanitised folder name'
+        required: false
+        type: string
+        default: 'true'
+      asset_name:
+        description: 'Optional explicit asset filename (overrides URL parsing)'
+        required: false
+        type: string
+        default: ''
+      chunk_threshold_bytes:
+        description: 'Files larger than this are split into N parts before upload'
+        required: false
+        type: string
+        default: '2040109465'  # ~1.95 GiB
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.release_tag }}-${{ github.event.inputs.folder_name }}
+  cancel-in-progress: false
+
+jobs:
+  release-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+
+      # Tiny sparse checkout — we only need git metadata and the .octofetch
+      # tree to commit the manifest. Asset bytes never enter the repo.
+      - name: Checkout (sparse, fast)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            .github
+            .octofetch
+          sparse-checkout-cone-mode: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends aria2 jq coreutils
+          # gh CLI is pre-installed on ubuntu-latest runners; sanity-check it
+          gh --version >/dev/null
+
+      - name: Download source file
+        env:
+          URL: ${{ github.event.inputs.file_url }}
+          FOLDER_INPUT: ${{ github.event.inputs.folder_name }}
+          SAFE_MODE: ${{ github.event.inputs.safe_mode }}
+          OVERRIDE_NAME: ${{ github.event.inputs.asset_name }}
+        run: |
+          set -euo pipefail
+
+          FOLDER=$(printf '%s' "$FOLDER_INPUT" | tr -c 'A-Za-z0-9._-' '_')
+          if [ ${#FOLDER} -gt 100 ]; then
+            FOLDER="${FOLDER:0:100}"
+          fi
+          if [ -z "$FOLDER" ]; then
+            FOLDER="REL_$(date +%Y%m%d%H%M%S)"
+          fi
+          echo "FOLDER=$FOLDER" >> "$GITHUB_ENV"
+
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+          # Filename resolution priority (mirrors smart-downloader.yml):
+          #   1. OVERRIDE_NAME from the client (UrlFileNameInferrer succeeded).
+          #   2. Content-Disposition header from a HEAD/GET probe — covers
+          #      encrypted-token URLs (firezone, Mega.nz, Pixeldrain, etc.).
+          #   3. URL basename — last resort.
+          probe_content_disposition() {
+            python3 - "$1" "$UA" 2>/dev/null <<'PYEOF'
+          import sys, re, urllib.request, urllib.parse, ssl
+          url, ua = sys.argv[1], sys.argv[2]
+          ctx = ssl.create_default_context()
+          cd = ""
+          for method in ("HEAD", "GET"):
+              try:
+                  headers = {"User-Agent": ua}
+                  if method == "GET":
+                      headers["Range"] = "bytes=0-0"
+                  req = urllib.request.Request(url, method=method, headers=headers)
+                  with urllib.request.urlopen(req, timeout=25, context=ctx) as r:
+                      cd = r.headers.get("Content-Disposition", "") or ""
+                  if cd:
+                      break
+              except Exception:
+                  continue
+          name = ""
+          if cd:
+              m = re.search(r"filename\*\s*=\s*([\w-]+)''([^;\r\n]+)", cd, re.IGNORECASE)
+              if m:
+                  enc = (m.group(1) or "utf-8").strip()
+                  try:
+                      name = urllib.parse.unquote(m.group(2).strip(), encoding=enc, errors="replace")
+                  except Exception:
+                      name = ""
+              if not name:
+                  m = re.search(r'filename\s*=\s*"([^"]+)"', cd, re.IGNORECASE)
+                  if m:
+                      name = m.group(1)
+              if not name:
+                  m = re.search(r'filename\s*=\s*([^;\r\n]+)', cd, re.IGNORECASE)
+                  if m:
+                      name = m.group(1).strip().strip('"').strip("'")
+          name = (name or "").strip().replace("/", "_").replace("\\", "_")
+          if name:
+              print(name)
+          PYEOF
+          }
+
+          if [ -n "$OVERRIDE_NAME" ]; then
+            RAW_NAME="$OVERRIDE_NAME"
+          else
+            CD_NAME=$(probe_content_disposition "$URL" || true)
+            if [ -n "$CD_NAME" ]; then
+              echo "🔍 Filename from Content-Disposition: $CD_NAME"
+              RAW_NAME="$CD_NAME"
+            else
+              RAW_NAME=$(basename "${URL%%\?*}" | sed 's/%20/ /g')
+            fi
+          fi
+
+          RAW_NAME=$(printf '%s' "$RAW_NAME" | tr -d '\000-\037')
+          if [ ${#RAW_NAME} -gt 180 ]; then
+            RAW_NAME="${RAW_NAME:0:180}"
+          fi
+
+          EXT="${RAW_NAME##*.}"
+          if [ ${#EXT} -gt 12 ] || [ "$EXT" = "$RAW_NAME" ]; then
+            EXT="bin"
+          fi
+
+          if [ "$SAFE_MODE" = "true" ]; then
+            FINAL_FILE="$FOLDER.$EXT"
+          else
+            NAME_NO_EXT="${RAW_NAME%.*}"
+            if [ ${#NAME_NO_EXT} -gt 100 ]; then
+              NAME_NO_EXT="${NAME_NO_EXT:0:100}"
+            fi
+            # Asset names can be relatively liberal but we still strip path
+            # separators and control chars so gh release upload won't choke.
+            NAME_NO_EXT=$(printf '%s' "$NAME_NO_EXT" | tr -c 'A-Za-z0-9._() -' '_')
+            if [ -z "$NAME_NO_EXT" ]; then
+              NAME_NO_EXT="$FOLDER"
+            fi
+            FINAL_FILE="$NAME_NO_EXT.$EXT"
+          fi
+          echo "FINAL_FILE=$FINAL_FILE" >> "$GITHUB_ENV"
+
+          mkdir -p source_file
+          aria2c \
+            --console-log-level=warn \
+            --summary-interval=5 \
+            --download-result=hide \
+            -x 16 -s 16 -k 1M \
+            --max-tries=5 \
+            --retry-wait=3 \
+            --connect-timeout=20 \
+            --timeout=60 \
+            --user-agent="$UA" \
+            --auto-file-renaming=false \
+            --allow-overwrite=true \
+            --check-certificate=true \
+            -d "source_file" -o "$FINAL_FILE" \
+            "$URL"
+
+          if [ ! -s "source_file/$FINAL_FILE" ]; then
+            echo "::error::Downloaded file is empty: $FINAL_FILE"
+            exit 1
+          fi
+
+      - name: Split large files
+        env:
+          THRESHOLD: ${{ github.event.inputs.chunk_threshold_bytes }}
+        run: |
+          set -euo pipefail
+          # GitHub release assets are capped at 2 GiB each. Anything that
+          # exceeds the user-configured threshold (default ~1.95 GiB so we
+          # leave headroom for filesystem rounding) gets split into evenly
+          # sized parts that can be reassembled with `cat` on the client.
+          SRC="source_file/$FINAL_FILE"
+          SIZE=$(stat -c '%s' "$SRC")
+          echo "FILE_SIZE=$SIZE"
+
+          # Sane lower bound to keep parts under GitHub's 2 GiB asset cap
+          # even if the user accidentally raised the threshold past that.
+          MAX_PART=2040109465
+          if [ -z "${THRESHOLD:-}" ] || [ "$THRESHOLD" -le 0 ]; then
+            THRESHOLD=$MAX_PART
+          fi
+          if [ "$THRESHOLD" -gt "$MAX_PART" ]; then
+            THRESHOLD=$MAX_PART
+          fi
+          echo "THRESHOLD=$THRESHOLD"
+
+          mkdir -p upload_parts
+          if [ "$SIZE" -le "$THRESHOLD" ]; then
+            echo "Single asset upload — file fits under threshold."
+            cp "$SRC" "upload_parts/$FINAL_FILE"
+            echo "PART_COUNT=1" >> "$GITHUB_ENV"
+            echo "IS_SPLIT=false" >> "$GITHUB_ENV"
+          else
+            # Calculate how many roughly-equal parts we need and use
+            # ceil(size / parts) so the last chunk is never empty.
+            PARTS=$(( (SIZE + THRESHOLD - 1) / THRESHOLD ))
+            PART_BYTES=$(( (SIZE + PARTS - 1) / PARTS ))
+            echo "Splitting $FINAL_FILE ($SIZE bytes) into $PARTS parts of $PART_BYTES bytes each."
+
+            # split -d adds a numeric suffix so reassembly is deterministic.
+            # Two-digit suffixes are plenty: a 2 GB threshold caps us at ~50
+            # parts for the GitHub 2 GiB-per-asset cap, well within 00..99.
+            split -d -a 2 -b "$PART_BYTES" "$SRC" "upload_parts/${FINAL_FILE}.part"
+
+            echo "PART_COUNT=$PARTS" >> "$GITHUB_ENV"
+            echo "IS_SPLIT=true" >> "$GITHUB_ENV"
+          fi
+
+          ls -lh upload_parts
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.release_tag }}
+          TITLE: ${{ github.event.inputs.release_title }}
+        run: |
+          set -euo pipefail
+          [ -n "${TAG:-}" ] || { echo "::error::release_tag is empty"; exit 1; }
+          DISPLAY_TITLE="${TITLE:-$TAG}"
+
+          # Idempotent ensure-release: view first, create only if missing.
+          # Avoids the noisy 422 'already_exists' response and lets re-runs
+          # against an existing release simply append assets to it.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — reusing."
+          else
+            echo "Creating release $TAG ($DISPLAY_TITLE)..."
+            gh release create "$TAG" \
+              --title "$DISPLAY_TITLE" \
+              --notes "Uploaded by OctoFetch (folder: $FOLDER)" \
+              --target "${GITHUB_REF_NAME:-main}"
+          fi
+
+      - name: Upload assets and build manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          # We `--clobber` so re-runs against the same release replace
+          # any partial-upload leftovers from a previous attempt cleanly.
+          shopt -s nullglob
+          ASSETS=( upload_parts/* )
+          if [ ${#ASSETS[@]} -eq 0 ]; then
+            echo "::error::No assets produced — split stage left upload_parts/ empty."
+            exit 1
+          fi
+
+          for a in "${ASSETS[@]}"; do
+            echo "Uploading: $(basename "$a")"
+            gh release upload "$TAG" "$a" --clobber
+          done
+
+          # Build the manifest by querying the release's asset list (this
+          # picks up the public download URLs and IDs assigned by GitHub).
+          mkdir -p ".octofetch/releases/$FOLDER"
+          REPO_OWNER="${GH_REPO%%/*}"
+          REPO_NAME="${GH_REPO##*/}"
+
+          # /repos/{owner}/{repo}/releases/tags/{tag} → release JSON with
+          # an `assets` array. Map each asset into the manifest schema the
+          # desktop client expects (mirrors the Drive manifest layout).
+          gh api "repos/$GH_REPO/releases/tags/$TAG" \
+            -H 'Accept: application/vnd.github+json' > release.json
+
+          # The manifest tracks every asset under this release. The client
+          # uses it to render the File Manager "Releases" tab and to
+          # offer rename/delete on each entry.
+          jq --arg folder "$FOLDER" \
+             --arg tag    "$TAG" \
+             --arg base   "$FINAL_FILE" \
+             --arg split  "$IS_SPLIT" \
+             --argjson parts "${PART_COUNT:-1}" \
+             '{
+                destination: "release",
+                tag: $tag,
+                folder: $folder,
+                base_name: $base,
+                is_split: ($split == "true"),
+                part_count: $parts,
+                release_url: .html_url,
+                files: [
+                  .assets[] | {
+                    name: .name,
+                    url: .browser_download_url,
+                    api_url: .url,
+                    id: .id,
+                    size: .size,
+                    download_count: .download_count
+                  }
+                ]
+              }' release.json > ".octofetch/releases/$FOLDER/links.json"
+
+      - name: Commit links manifest
+        env:
+          # TAG isn't carried forward via GITHUB_ENV — re-inject it here so
+          # `set -u` doesn't bail on the commit message expansion.
+          TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "OctoFetchBot"
+          git config user.email "bot@octofetch.local"
+          git config advice.updateSparsePath false
+
+          git add --sparse -- ".octofetch/releases/$FOLDER/links.json"
+          if git diff --cached --quiet; then
+            echo "No links.json staged."
+            exit 0
+          fi
+          git commit -m "Release: $FOLDER ($TAG) links manifest"
+
+          for attempt in 1 2 3 4 5; do
+            git fetch origin >/dev/null 2>&1 || true
+            git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)" >/dev/null 2>&1 || true
+            if git push; then
+              echo "Manifest pushed on attempt $attempt"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::Failed to push links.json after 5 attempts"
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf source_file upload_parts 2>/dev/null || true

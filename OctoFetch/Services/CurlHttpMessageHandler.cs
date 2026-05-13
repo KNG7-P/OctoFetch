@@ -14,13 +14,15 @@ namespace OctoFetch.Services
         private readonly string _curlPath;
         private readonly string? _caCertPath;
         private readonly IAppLogger _logger;
+        private readonly IMitmService? _mitm;
         private static int _sslWarningLogged;
 
         public bool AllowInsecureSsl { get; set; }
 
-        public CurlHttpMessageHandler(IAppLogger logger, bool allowInsecureSsl = false)
+        public CurlHttpMessageHandler(IAppLogger logger, bool allowInsecureSsl = false, IMitmService? mitm = null)
         {
             _logger = logger;
+            _mitm = mitm;
 
             var gitCoreDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "GitCore");
             _curlPath = Path.Combine(gitCoreDir, "curl.exe");
@@ -53,7 +55,14 @@ namespace OctoFetch.Services
                 var args = new StringBuilder();
                 args.Append("--retry 3 --retry-delay 2 --connect-timeout 20 -s ");
 
-                if (AllowInsecureSsl)
+                args.Append("--compressed ");
+
+                bool useProxy = _mitm != null && _mitm.IsRunning;
+                if (useProxy)
+                {
+                    args.Append($"-x \"{_mitm!.ProxyUrl}\" -k ");
+                }
+                else if (AllowInsecureSsl)
                 {
                     args.Append("-k ");
                 }
@@ -71,6 +80,8 @@ namespace OctoFetch.Services
                     }
                     args.Append("-k ");
                 }
+
+                if (!useProxy) args.Append("--noproxy \"*\" ");
 
                 args.Append($"-D \"{tempHeaderFile}\" ");
                 args.Append($"-o \"{tempOutFile}\" ");
@@ -149,21 +160,35 @@ namespace OctoFetch.Services
                 if (File.Exists(tempHeaderFile))
                 {
                     var headerLines = await File.ReadAllLinesAsync(tempHeaderFile, cancellationToken).ConfigureAwait(false);
-                    if (headerLines.Length > 0)
+
+                    int lastStatusIdx = 0;
+                    for (var i = 0; i < headerLines.Length; i++)
                     {
-                        var statusLine = headerLines[0].Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        if (headerLines[i].StartsWith("HTTP/", StringComparison.OrdinalIgnoreCase))
+                            lastStatusIdx = i;
+                    }
+
+                    if (lastStatusIdx < headerLines.Length)
+                    {
+                        var statusLine = headerLines[lastStatusIdx].Split(' ', StringSplitOptions.RemoveEmptyEntries);
                         if (statusLine.Length >= 2 && int.TryParse(statusLine[1], out var code))
                             response.StatusCode = (HttpStatusCode)code;
 
-                        for (var i = 1; i < headerLines.Length; i++)
+                        for (var i = lastStatusIdx + 1; i < headerLines.Length; i++)
                         {
                             var line = headerLines[i];
                             if (string.IsNullOrWhiteSpace(line)) continue;
+                            if (line.StartsWith("HTTP/", StringComparison.OrdinalIgnoreCase)) break;
                             var sep = line.IndexOf(':');
                             if (sep <= 0) continue;
 
                             var key = line[..sep].Trim();
                             var val = line[(sep + 1)..].Trim();
+
+                            if (key.Equals("Content-Encoding", StringComparison.OrdinalIgnoreCase) ||
+                                key.Equals("Content-Length",   StringComparison.OrdinalIgnoreCase) ||
+                                key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase))
+                                continue;
 
                             if (key.StartsWith("Content-", StringComparison.OrdinalIgnoreCase))
                                 response.Content.Headers.TryAddWithoutValidation(key, val);

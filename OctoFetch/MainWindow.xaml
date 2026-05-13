@@ -15,9 +15,11 @@
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
-        ResizeMode="CanResize"
+        ResizeMode="CanMinimize"
         TextOptions.TextFormattingMode="Display"
         TextOptions.TextRenderingMode="ClearType"
+        SnapsToDevicePixels="True"
+        UseLayoutRounding="True"
         FontFamily="{StaticResource BrandFont}"
         TextElement.Foreground="{StaticResource TextPrimary}"
         TextElement.FontSize="13"
@@ -33,10 +35,10 @@
     </WindowChrome.WindowChrome>
 
     <Border Background="{StaticResource WindowBackdrop}"
-            CornerRadius="15" Margin="14">
-        <Border.Effect>
-            <DropShadowEffect Color="Black" ShadowDepth="0" BlurRadius="30" Opacity="0.55"/>
-        </Border.Effect>
+            CornerRadius="15" Margin="14"
+            BorderBrush="#FF1F1F2C" BorderThickness="1"
+            md:RippleAssist.IsDisabled="True"
+            md:TransitionAssist.DisableTransitions="True">
 
         <Grid>
             <Grid.ColumnDefinitions>
@@ -75,7 +77,8 @@
                 </Grid>
 
                 <!-- Tab content area -->
-                <Grid Grid.Row="1" Margin="20,12,20,20">
+                <Grid Grid.Row="1" Margin="20,12,20,20"
+                      md:TransitionAssist.DisableTransitions="True">
                     <Grid Style="{StaticResource TabPaneAnim}"
                           Visibility="{Binding IsDashboardActive, Converter={StaticResource BoolToVisibility}}">
                         <tabs:DashboardView DataContext="{Binding Dashboard}"/>
@@ -91,6 +94,14 @@
                     <Grid Style="{StaticResource TabPaneAnim}"
                           Visibility="{Binding IsStatsActive, Converter={StaticResource BoolToVisibility}}">
                         <tabs:StatsView DataContext="{Binding}"/>
+                    </Grid>
+                    <Grid Style="{StaticResource TabPaneAnim}"
+                          Visibility="{Binding IsYouTubeActive, Converter={StaticResource BoolToVisibility}}">
+                        <tabs:YouTubeView DataContext="{Binding YouTube}"/>
+                    </Grid>
+                    <Grid Style="{StaticResource TabPaneAnim}"
+                          Visibility="{Binding IsDownloaderActive, Converter={StaticResource BoolToVisibility}}">
+                        <tabs:DownloaderView DataContext="{Binding Downloader}"/>
                     </Grid>
                     <Grid Style="{StaticResource TabPaneAnim}"
                           Visibility="{Binding IsSettingsActive, Converter={StaticResource BoolToVisibility}}">

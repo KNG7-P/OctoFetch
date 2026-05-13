@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Input;
 using OctoFetch.ViewModels;
 
@@ -19,12 +19,42 @@ namespace OctoFetch
             vm.NodeManagement.NewTokenProvider = () => SettingsHost.GetNewToken();
             vm.NodeManagement.ClearNewTokenInput = () => SettingsHost.ClearNewToken();
             vm.FileManager.SelectedItemsProvider = () => FileManagerHost.GetSelectedItems();
+
+            Models.YouTubeDownloadOptions? ShowYtDialog(string title)
+            {
+                var dlg = new Views.Dialogs.YouTubeDownloadDialog(title) { Owner = this };
+                return dlg.ShowDialog() == true ? dlg.Result : null;
+            }
+
+            vm.YouTube.ShowDownloadDialog = ShowYtDialog;
+            vm.Dashboard.ShowYouTubeDialog = ShowYtDialog;
+
             vm.FileManager.PromptForNewFolderName = currentName =>
             {
                 var dlg = new Views.InputDialog(
                     title: "Rename folder",
                     prompt: "Enter the new folder name:",
                     initial: currentName)
+                { Owner = this };
+                return dlg.ShowDialog() == true ? dlg.Answer : null;
+            };
+
+            vm.FileManager.PromptForNewReleaseAssetName = asset =>
+            {
+                var dlg = new Views.InputDialog(
+                    title: "Rename release asset",
+                    prompt: $"Tag: {asset.Tag}  •  Enter the new file name (including extension).",
+                    initial: asset.Name)
+                { Owner = this };
+                return dlg.ShowDialog() == true ? dlg.Answer : null;
+            };
+
+            vm.FileManager.PromptForNewDriveFileName = file =>
+            {
+                var dlg = new Views.InputDialog(
+                    title: "Rename Drive file",
+                    prompt: $"Folder: {file.Category}  •  Enter the new file name (including extension).",
+                    initial: file.Name)
                 { Owner = this };
                 return dlg.ShowDialog() == true ? dlg.Answer : null;
             };
@@ -64,6 +94,8 @@ namespace OctoFetch
                 vm.IsExtractorActive = false;
                 vm.IsStatsActive = false;
                 vm.IsSettingsActive = false;
+                vm.IsYouTubeActive = false;
+                vm.IsDownloaderActive = false;
             }
         }
 

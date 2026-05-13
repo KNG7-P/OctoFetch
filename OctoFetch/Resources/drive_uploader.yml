@@ -1,0 +1,332 @@
+# OctoFetch-Drive-Version: 3
+
+name: 'Drive Upload Engine'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: 'Direct file URL to download'
+        required: true
+        type: string
+      folder_name:
+        description: 'Folder identifier used for the links manifest path'
+        required: true
+        type: string
+      safe_mode:
+        description: 'Replace the source filename with the sanitised folder name'
+        required: true
+        type: string
+      drive_category:
+        description: 'Sub-folder created under OctoFetch/ on Google Drive'
+        required: false
+        type: string
+        default: 'Other'
+      drive_file_name:
+        description: 'Optional explicit destination filename (overrides URL parsing)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: drive-${{ github.event.inputs.folder_name }}
+  cancel-in-progress: false
+
+jobs:
+  drive-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+
+      # Sparse + blob:none checkout. The host repo may already be loaded with
+      # many GBs of previous GitHub-destination chunks; for the Drive path we
+      # only need a working git tree to commit a tiny links.json manifest.
+      - name: Checkout (sparse, fast)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          filter: blob:none
+          sparse-checkout: |
+            .github
+          sparse-checkout-cone-mode: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends aria2 python3 python3-pip
+          pip3 install --quiet google-api-python-client google-auth google-auth-httplib2
+
+      - name: Download source file
+        env:
+          URL: ${{ github.event.inputs.file_url }}
+          FOLDER_INPUT: ${{ github.event.inputs.folder_name }}
+          SAFE_MODE: ${{ github.event.inputs.safe_mode }}
+          OVERRIDE_NAME: ${{ github.event.inputs.drive_file_name }}
+        run: |
+          set -euo pipefail
+
+          FOLDER=$(printf '%s' "$FOLDER_INPUT" | tr -c 'A-Za-z0-9._-' '_')
+          if [ ${#FOLDER} -gt 100 ]; then
+            FOLDER="${FOLDER:0:100}"
+          fi
+          if [ -z "$FOLDER" ]; then
+            FOLDER="DL_$(date +%Y%m%d%H%M%S)"
+          fi
+          echo "FOLDER=$FOLDER" >> "$GITHUB_ENV"
+
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+          # Filename resolution priority (mirrors smart-downloader.yml):
+          #   1. OVERRIDE_NAME from the client (UrlFileNameInferrer succeeded).
+          #   2. Content-Disposition header from a HEAD/GET probe — covers
+          #      encrypted-token URLs (firezone, Mega.nz, Pixeldrain, etc.)
+          #      where the URL itself carries no filename.
+          #   3. URL basename — last resort.
+          probe_content_disposition() {
+            python3 - "$1" "$UA" 2>/dev/null <<'PYEOF'
+          import sys, re, urllib.request, urllib.parse, ssl
+          url, ua = sys.argv[1], sys.argv[2]
+          ctx = ssl.create_default_context()
+          cd = ""
+          for method in ("HEAD", "GET"):
+              try:
+                  headers = {"User-Agent": ua}
+                  if method == "GET":
+                      headers["Range"] = "bytes=0-0"
+                  req = urllib.request.Request(url, method=method, headers=headers)
+                  with urllib.request.urlopen(req, timeout=25, context=ctx) as r:
+                      cd = r.headers.get("Content-Disposition", "") or ""
+                  if cd:
+                      break
+              except Exception:
+                  continue
+          name = ""
+          if cd:
+              m = re.search(r"filename\*\s*=\s*([\w-]+)''([^;\r\n]+)", cd, re.IGNORECASE)
+              if m:
+                  enc = (m.group(1) or "utf-8").strip()
+                  try:
+                      name = urllib.parse.unquote(m.group(2).strip(), encoding=enc, errors="replace")
+                  except Exception:
+                      name = ""
+              if not name:
+                  m = re.search(r'filename\s*=\s*"([^"]+)"', cd, re.IGNORECASE)
+                  if m:
+                      name = m.group(1)
+              if not name:
+                  m = re.search(r'filename\s*=\s*([^;\r\n]+)', cd, re.IGNORECASE)
+                  if m:
+                      name = m.group(1).strip().strip('"').strip("'")
+          name = (name or "").strip().replace("/", "_").replace("\\", "_")
+          if name:
+              print(name)
+          PYEOF
+          }
+
+          if [ -n "$OVERRIDE_NAME" ]; then
+            RAW_NAME="$OVERRIDE_NAME"
+          else
+            CD_NAME=$(probe_content_disposition "$URL" || true)
+            if [ -n "$CD_NAME" ]; then
+              echo "🔍 Filename from Content-Disposition: $CD_NAME"
+              RAW_NAME="$CD_NAME"
+            else
+              RAW_NAME=$(basename "${URL%%\?*}" | sed 's/%20/ /g')
+            fi
+          fi
+
+          RAW_NAME=$(printf '%s' "$RAW_NAME" | tr -d '\000-\037')
+          if [ ${#RAW_NAME} -gt 180 ]; then
+            RAW_NAME="${RAW_NAME:0:180}"
+          fi
+
+          EXT="${RAW_NAME##*.}"
+          if [ ${#EXT} -gt 12 ] || [ "$EXT" = "$RAW_NAME" ]; then
+            EXT="bin"
+          fi
+
+          if [ "$SAFE_MODE" = "true" ]; then
+            FINAL_FILE="$FOLDER.$EXT"
+          else
+            NAME_NO_EXT="${RAW_NAME%.*}"
+            if [ ${#NAME_NO_EXT} -gt 100 ]; then
+              NAME_NO_EXT="${NAME_NO_EXT:0:100}"
+            fi
+            NAME_NO_EXT=$(printf '%s' "$NAME_NO_EXT" | tr -c 'A-Za-z0-9._-' '_')
+            if [ -z "$NAME_NO_EXT" ]; then
+              NAME_NO_EXT="$FOLDER"
+            fi
+            FINAL_FILE="$NAME_NO_EXT.$EXT"
+          fi
+          echo "FINAL_FILE=$FINAL_FILE" >> "$GITHUB_ENV"
+
+          mkdir -p source_file
+          aria2c \
+            --console-log-level=warn \
+            --summary-interval=5 \
+            --download-result=hide \
+            -x 16 -s 16 -k 1M \
+            --max-tries=5 \
+            --retry-wait=3 \
+            --connect-timeout=20 \
+            --timeout=60 \
+            --user-agent="$UA" \
+            --auto-file-renaming=false \
+            --allow-overwrite=true \
+            --check-certificate=true \
+            -d "source_file" -o "$FINAL_FILE" \
+            "$URL"
+
+          if [ ! -s "source_file/$FINAL_FILE" ]; then
+            echo "::error::Downloaded file is empty: $FINAL_FILE"
+            exit 1
+          fi
+
+      - name: Upload to Google Drive
+        env:
+          DRIVE_REFRESH_TOKEN: ${{ secrets.OCTOFETCH_DRIVE_REFRESH_TOKEN }}
+          DRIVE_CLIENT_ID: ${{ secrets.OCTOFETCH_DRIVE_CLIENT_ID }}
+          DRIVE_CLIENT_SECRET: ${{ secrets.OCTOFETCH_DRIVE_CLIENT_SECRET }}
+          DRIVE_CATEGORY: ${{ github.event.inputs.drive_category }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DRIVE_REFRESH_TOKEN:-}" ] || [ -z "${DRIVE_CLIENT_ID:-}" ] || [ -z "${DRIVE_CLIENT_SECRET:-}" ]; then
+            echo "::error::Drive credentials missing. Re-connect Google Drive in the OctoFetch desktop app."
+            exit 1
+          fi
+
+          python3 << 'PY'
+          import os, sys, json, mimetypes
+          from googleapiclient.discovery import build
+          from googleapiclient.http import MediaFileUpload
+          from google.oauth2.credentials import Credentials
+
+          creds = Credentials(
+              None,
+              refresh_token=os.environ['DRIVE_REFRESH_TOKEN'],
+              client_id=os.environ['DRIVE_CLIENT_ID'],
+              client_secret=os.environ['DRIVE_CLIENT_SECRET'],
+              token_uri='https://oauth2.googleapis.com/token',
+              scopes=['https://www.googleapis.com/auth/drive.file'],
+          )
+          drive = build('drive', 'v3', credentials=creds, cache_discovery=False)
+
+          category = (os.environ.get('DRIVE_CATEGORY') or 'Other').strip() or 'Other'
+          folder = os.environ['FOLDER']
+          source_dir = 'source_file'
+
+          def escape(name):
+              return name.replace("\\", "\\\\").replace("'", "\\'")
+
+          def find_or_create_folder(name, parent_id):
+              parent_clause = (f"and '{parent_id}' in parents"
+                               if parent_id else "and 'root' in parents")
+              q = ("mimeType = 'application/vnd.google-apps.folder' "
+                   "and trashed = false "
+                   f"and name = '{escape(name)}' {parent_clause}")
+              resp = drive.files().list(
+                  q=q, spaces='drive',
+                  fields='files(id, name)',
+                  pageSize=10
+              ).execute()
+              files = resp.get('files', [])
+              if files:
+                  return files[0]['id']
+              meta = {'name': name, 'mimeType': 'application/vnd.google-apps.folder'}
+              if parent_id:
+                  meta['parents'] = [parent_id]
+              created = drive.files().create(body=meta, fields='id').execute()
+              return created['id']
+
+          root_id = find_or_create_folder('OctoFetch', None)
+          target_id = find_or_create_folder(category, root_id)
+
+          uploads = sorted(os.listdir(source_dir)) if os.path.isdir(source_dir) else []
+          if not uploads:
+              print('::error::source_file/ is empty after download.', file=sys.stderr)
+              sys.exit(1)
+
+          results = []
+          for fname in uploads:
+              path = os.path.join(source_dir, fname)
+              mime, _ = mimetypes.guess_type(fname)
+              media = MediaFileUpload(
+                  path,
+                  mimetype=mime or 'application/octet-stream',
+                  resumable=True,
+                  chunksize=4 * 1024 * 1024,
+              )
+              meta = {'name': fname, 'parents': [target_id]}
+              print(f'Uploading: {fname}')
+              file = drive.files().create(
+                  body=meta, media_body=media,
+                  fields='id, name, size, webViewLink, webContentLink'
+              ).execute()
+
+              try:
+                  drive.permissions().create(
+                      fileId=file['id'],
+                      body={'role': 'reader', 'type': 'anyone'},
+                      fields='id',
+                  ).execute()
+              except Exception as exc:
+                  print(f'::warning::Could not publish {fname}: {exc}', file=sys.stderr)
+
+              share_url = (
+                  file.get('webViewLink')
+                  or f"https://drive.google.com/file/d/{file['id']}/view"
+              )
+              results.append({
+                  'name': file.get('name', fname),
+                  'url': share_url,
+                  'id': file['id'],
+                  'size': file.get('size'),
+              })
+              print(f'Uploaded: {share_url}')
+
+          # The manifest lives outside downloads/ so the OctoFetch File
+          # Manager (which only lists downloads/<folder>/...) never picks up
+          # this Drive-only metadata file. The desktop client reads the
+          # manifest directly from .octofetch/drive/<folder>/links.json.
+          out_dir = os.path.join('.octofetch', 'drive', folder)
+          os.makedirs(out_dir, exist_ok=True)
+          with open(os.path.join(out_dir, 'links.json'), 'w', encoding='utf-8') as f:
+              json.dump({'destination': 'drive', 'files': results}, f, indent=2)
+          PY
+
+      - name: Commit links manifest
+        run: |
+          set -euo pipefail
+
+          git config user.name "OctoFetchBot"
+          git config user.email "bot@octofetch.local"
+          git config advice.updateSparsePath false
+
+          git add --sparse -- ".octofetch/drive/$FOLDER/links.json"
+          if git diff --cached --quiet; then
+            echo "No links.json staged."
+            exit 0
+          fi
+          git commit -m "Drive: $FOLDER links manifest"
+
+          for attempt in 1 2 3 4 5; do
+            git fetch origin >/dev/null 2>&1 || true
+            git pull --rebase origin "$(git rev-parse --abbrev-ref HEAD)" >/dev/null 2>&1 || true
+            if git push; then
+              echo "Manifest pushed on attempt $attempt"
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "::error::Failed to push links.json after 5 attempts"
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf source_file 2>/dev/null || true

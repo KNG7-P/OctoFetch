@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
 using Octokit;
 using Octokit.Internal;
 using OctoFetch.Exceptions;
@@ -22,7 +23,42 @@ namespace OctoFetch.Services
         private const string WorkflowFileName = "smart-downloader.yml";
         private const string WorkflowPath = ".github/workflows/" + WorkflowFileName;
         private const string YamlVersionMarker = "# OctoFetch-YAML-Version:";
-        private const int CurrentYamlVersion = 7;
+        private const int CurrentYamlVersion = 9;
+
+        private const string YouTubeWorkflowFileName = "youtube_downloader.yml";
+        private const string YouTubeWorkflowPath = ".github/workflows/" + YouTubeWorkflowFileName;
+        private const string YouTubeYamlVersionMarker = "# OctoFetch-YouTube-Version:";
+        private const int CurrentYouTubeYamlVersion = 4;
+
+        private const string DriveWorkflowFileName = "drive_uploader.yml";
+        private const string DriveWorkflowPath = ".github/workflows/" + DriveWorkflowFileName;
+        private const string DriveYamlVersionMarker = "# OctoFetch-Drive-Version:";
+        private const int CurrentDriveYamlVersion = 3;
+
+        private const string YouTubeDriveWorkflowFileName = "youtube_drive_uploader.yml";
+        private const string YouTubeDriveWorkflowPath = ".github/workflows/" + YouTubeDriveWorkflowFileName;
+        private const string YouTubeDriveYamlVersionMarker = "# OctoFetch-YouTubeDrive-Version:";
+        private const int CurrentYouTubeDriveYamlVersion = 3;
+
+        private const string ReleaseWorkflowFileName = "release_uploader.yml";
+        private const string ReleaseWorkflowPath = ".github/workflows/" + ReleaseWorkflowFileName;
+        private const string ReleaseYamlVersionMarker = "# OctoFetch-Release-Version:";
+        private const int CurrentReleaseYamlVersion = 3;
+
+        private const string YouTubeReleaseWorkflowFileName = "youtube_release_uploader.yml";
+        private const string YouTubeReleaseWorkflowPath = ".github/workflows/" + YouTubeReleaseWorkflowFileName;
+        private const string YouTubeReleaseYamlVersionMarker = "# OctoFetch-YouTubeRelease-Version:";
+        private const int CurrentYouTubeReleaseYamlVersion = 2;
+
+        private const string DriveManifestRoot = ".octofetch/drive";
+
+        private const string ReleaseManifestRoot = ".octofetch/releases";
+
+        private const string DriveSecretRefreshToken = "OCTOFETCH_DRIVE_REFRESH_TOKEN";
+        private const string DriveSecretClientId = "OCTOFETCH_DRIVE_CLIENT_ID";
+        private const string DriveSecretClientSecret = "OCTOFETCH_DRIVE_CLIENT_SECRET";
+
+        private const string LegacyYouTubeAdvWorkflowPath = ".github/workflows/youtube_adv_download.yml";
 
         private static readonly HashSet<string> InternalFileNames =
             new(StringComparer.OrdinalIgnoreCase) { "checksums.sha256", ".gitkeep" };
@@ -36,23 +72,37 @@ namespace OctoFetch.Services
         private readonly Func<int> _pollIntervalSecondsProvider;
         private readonly Func<int> _pollMaxAttemptsProvider;
         private readonly Func<string> _chunkSizeProvider;
+        private readonly Func<DriveActionsCredentials?> _driveCredentialsProvider;
+        private readonly IMitmService? _mitm;
 
         private readonly List<CloudNode> _activeNodes = new();
         private readonly object _activeNodesLock = new();
         private long _roundRobinIndex = -1;
+
+        private sealed class DispatchTracker
+        {
+            public string FolderName { get; init; } = string.Empty;
+            public DateTimeOffset DispatchTime { get; init; }
+            public string WorkflowFile { get; init; } = string.Empty;
+        }
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DispatchTracker> _lastDispatch = new();
 
         public GitHubService(
             IAppLogger logger,
             Func<bool> allowInsecureSslProvider,
             Func<int> pollIntervalSecondsProvider,
             Func<int> pollMaxAttemptsProvider,
-            Func<string> chunkSizeProvider)
+            Func<string> chunkSizeProvider,
+            Func<DriveActionsCredentials?>? driveCredentialsProvider = null,
+            IMitmService? mitm = null)
         {
             _logger = logger;
             _allowInsecureSslProvider = allowInsecureSslProvider;
             _pollIntervalSecondsProvider = pollIntervalSecondsProvider;
             _pollMaxAttemptsProvider = pollMaxAttemptsProvider;
             _chunkSizeProvider = chunkSizeProvider;
+            _driveCredentialsProvider = driveCredentialsProvider ?? (() => null);
+            _mitm = mitm;
         }
 
         public IReadOnlyList<CloudNode> ActiveNodes
@@ -85,7 +135,7 @@ namespace OctoFetch.Services
                 {
                     var connection = new Connection(
                         new Octokit.ProductHeaderValue("OctoFetch"),
-                        new HttpClientAdapter(() => new CurlHttpMessageHandler(_logger, _allowInsecureSslProvider())));
+                        new HttpClientAdapter(() => new CurlHttpMessageHandler(_logger, _allowInsecureSslProvider(), _mitm)));
 
                     node.Client = new GitHubClient(connection)
                     {
@@ -115,6 +165,12 @@ namespace OctoFetch.Services
                     node.DefaultBranch = string.IsNullOrEmpty(repo.DefaultBranch) ? "main" : repo.DefaultBranch;
 
                     await EnsureWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
+                    await EnsureYouTubeWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
+                    await EnsureDriveWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
+                    await EnsureYouTubeDriveWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
+                    await EnsureReleaseWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
+                    await EnsureYouTubeReleaseWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
+                    await RemoveLegacyYouTubeAdvWorkflowAsync(node, cancellationToken).ConfigureAwait(false);
 
                     node.IsConnected = true;
                     node.BadgeColor = "#10B981";
@@ -122,6 +178,25 @@ namespace OctoFetch.Services
                     lock (_activeNodesLock)
                     {
                         if (!_activeNodes.Contains(node)) _activeNodes.Add(node);
+                    }
+
+                    var driveCreds = _driveCredentialsProvider();
+                    if (driveCreds != null)
+                    {
+                        try
+                        {
+                            await PushDriveSecretsToNodeAsync(node, driveCreds, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        catch (DriveSecretsScopeException scopeEx)
+                        {
+                            _logger.Log(LogChannel.Settings, $"ℹ️ {scopeEx.Message}");
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogException(LogChannel.Settings,
+                                $"Failed to seed Drive secrets on [{node.RepoName}]", ex);
+                        }
                     }
 
                     _logger.Log(LogChannel.Settings, $"✅ Connected: [{node.RepoName}] as {node.Username} (branch: {node.DefaultBranch})");
@@ -209,11 +284,20 @@ namespace OctoFetch.Services
 
                 var existingYaml = current.Content ?? string.Empty;
 
+                if (string.IsNullOrEmpty(current.Sha))
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"\u26A0 Skipping workflow update on [{node.RepoName}]: GitHub returned a workflow file with no sha. " +
+                        "This usually means the API response was truncated or proxied through a misconfigured MITM. " +
+                        "Try again with MITM disabled, or check the Mitm log for engine errors.");
+                    return;
+                }
+
                 var existingVersion = ExtractYamlVersion(existingYaml);
                 if (existingVersion is null || existingVersion < CurrentYamlVersion)
                 {
                     _logger.Log(LogChannel.Settings,
-                        $"🔁 Updating workflow on [{node.RepoName}] (v{existingVersion?.ToString() ?? "?"} → v{CurrentYamlVersion})...");
+                        $"\uD83D\uDD01 Updating workflow on [{node.RepoName}] (v{existingVersion?.ToString() ?? "?"} \u2192 v{CurrentYamlVersion})...");
                     await node.Client.Repository.Content.UpdateFile(
                         node.Username,
                         node.RepoName,
@@ -228,24 +312,674 @@ namespace OctoFetch.Services
             }
         }
 
-        private async Task CreateWorkflowAsync(CloudNode node, string yaml, CancellationToken cancellationToken)
+        private Task CreateWorkflowAsync(CloudNode node, string yaml, CancellationToken cancellationToken)
+            => CreateOrRecoverWorkflowFileAsync(
+                node,
+                WorkflowPath,
+                yaml,
+                "chore: init OctoFetch workflow",
+                $"chore: re-sync OctoFetch workflow to v{CurrentYamlVersion}",
+                "workflow",
+                cancellationToken);
+
+        // -------- YouTube workflow injection ---------------------------------
+        private static string LoadEmbeddedYouTubeWorkflowYaml()
         {
+            var asm = Assembly.GetExecutingAssembly();
+            var name = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith("youtube_downloader.yml", StringComparison.OrdinalIgnoreCase))
+                ?? throw new OctoFetchException("Embedded YouTube workflow YAML not found.");
+            using var stream = asm.GetManifestResourceStream(name)
+                ?? throw new OctoFetchException("Could not open embedded YouTube workflow YAML stream.");
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            return reader.ReadToEnd();
+        }
+
+        private static int? ExtractYouTubeYamlVersion(string content)
+        {
+            if (string.IsNullOrEmpty(content)) return null;
+            var match = Regex.Match(content, $@"{Regex.Escape(YouTubeYamlVersionMarker)}\s*(\d+)");
+            return match.Success && int.TryParse(match.Groups[1].Value, out var v) ? v : null;
+        }
+
+        private async Task EnsureYouTubeWorkflowAsync(CloudNode node, CancellationToken cancellationToken)
+        {
+            if (node.Client == null || node.Username == null) return;
             cancellationToken.ThrowIfCancellationRequested();
+
+            var yaml = LoadEmbeddedYouTubeWorkflowYaml();
+
             try
             {
-                _logger.Log(LogChannel.Settings, $"🛠️ Injecting workflow into [{node.RepoName}]...");
-                await node.Client!.Repository.Content.CreateFile(
-                    node.Username!,
-                    node.RepoName,
-                    WorkflowPath,
-                    new CreateFileRequest("chore: init OctoFetch workflow", yaml, node.DefaultBranch)
+                var existing = await node.Client.Repository.Content
+                    .GetAllContents(node.Username, node.RepoName, YouTubeWorkflowPath)
+                    .ConfigureAwait(false);
+
+                var current = existing?.FirstOrDefault();
+                if (current == null)
+                {
+                    await CreateYouTubeWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(current.Sha))
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"\u26A0 Skipping YouTube workflow update on [{node.RepoName}]: GitHub returned a workflow file with no sha. " +
+                        "This usually means the API response was truncated or proxied through a misconfigured MITM. " +
+                        "Try again with MITM disabled, or check the Mitm log for engine errors.");
+                    return;
+                }
+
+                var existingYaml = current.Content ?? string.Empty;
+                var existingVersion = ExtractYouTubeYamlVersion(existingYaml);
+                if (existingVersion is null || existingVersion < CurrentYouTubeYamlVersion)
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"\ud83d\udd01 Updating YouTube workflow on [{node.RepoName}] (v{existingVersion?.ToString() ?? "?"} \u2192 v{CurrentYouTubeYamlVersion})...");
+                    await node.Client.Repository.Content.UpdateFile(
+                        node.Username, node.RepoName, YouTubeWorkflowPath,
+                        new UpdateFileRequest($"chore: upgrade YouTube workflow to v{CurrentYouTubeYamlVersion}", yaml, current.Sha, node.DefaultBranch)
+                    ).ConfigureAwait(false);
+                }
+            }
+            catch (NotFoundException)
+            {
+                await CreateYouTubeWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private Task CreateYouTubeWorkflowAsync(CloudNode node, string yaml, CancellationToken cancellationToken)
+            => CreateOrRecoverWorkflowFileAsync(
+                node,
+                YouTubeWorkflowPath,
+                yaml,
+                "chore: init YouTube workflow",
+                $"chore: re-sync YouTube workflow to v{CurrentYouTubeYamlVersion}",
+                "YouTube workflow",
+                cancellationToken);
+
+        private async Task RemoveLegacyYouTubeAdvWorkflowAsync(CloudNode node, CancellationToken cancellationToken)
+        {
+            if (node.Client == null || node.Username == null) return;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                var existing = await node.Client.Repository.Content
+                    .GetAllContents(node.Username, node.RepoName, LegacyYouTubeAdvWorkflowPath)
+                    .ConfigureAwait(false);
+
+                var current = existing?.FirstOrDefault();
+                if (current == null) return;
+
+                _logger.Log(LogChannel.Settings,
+                    $"\ud83e\uddf9 Removing legacy yt-dlp workflow from [{node.RepoName}]...");
+                await node.Client.Repository.Content.DeleteFile(
+                    node.Username, node.RepoName, LegacyYouTubeAdvWorkflowPath,
+                    new DeleteFileRequest("chore: remove unused yt-dlp workflow", current.Sha, node.DefaultBranch)
                 ).ConfigureAwait(false);
+            }
+            catch (NotFoundException)
+            {
             }
             catch (Exception ex)
             {
-                _logger.LogException(LogChannel.Settings, $"Failed to inject workflow on [{node.RepoName}]", ex);
+                _logger.LogException(LogChannel.Settings,
+                    $"Failed to remove legacy yt-dlp workflow on [{node.RepoName}]", ex);
             }
         }
+
+        // -------- Drive workflow injection ----------------------------------
+
+        private static string LoadEmbeddedDriveWorkflowYaml()
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            var name = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith("drive_uploader.yml", StringComparison.OrdinalIgnoreCase))
+                ?? throw new OctoFetchException("Embedded Drive workflow YAML not found.");
+            using var stream = asm.GetManifestResourceStream(name)
+                ?? throw new OctoFetchException("Could not open embedded Drive workflow YAML stream.");
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            return reader.ReadToEnd();
+        }
+
+        private static int? ExtractDriveYamlVersion(string content)
+        {
+            if (string.IsNullOrEmpty(content)) return null;
+            var match = Regex.Match(content, $@"{Regex.Escape(DriveYamlVersionMarker)}\s*(\d+)");
+            return match.Success && int.TryParse(match.Groups[1].Value, out var v) ? v : null;
+        }
+
+        private async Task EnsureDriveWorkflowAsync(CloudNode node, CancellationToken cancellationToken)
+        {
+            if (node.Client == null || node.Username == null) return;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var yaml = LoadEmbeddedDriveWorkflowYaml();
+
+            try
+            {
+                var existing = await node.Client.Repository.Content
+                    .GetAllContents(node.Username, node.RepoName, DriveWorkflowPath)
+                    .ConfigureAwait(false);
+
+                var current = existing?.FirstOrDefault();
+                if (current == null)
+                {
+                    await CreateDriveWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(current.Sha))
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"\u26A0 Skipping Drive workflow update on [{node.RepoName}]: GitHub returned a workflow file with no sha. " +
+                        "This usually means the API response was truncated or proxied through a misconfigured MITM. " +
+                        "Try again with MITM disabled, or check the Mitm log for engine errors.");
+                    return;
+                }
+
+                var existingVersion = ExtractDriveYamlVersion(current.Content ?? string.Empty);
+                if (existingVersion is null || existingVersion < CurrentDriveYamlVersion)
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"🔁 Updating Drive workflow on [{node.RepoName}] (v{existingVersion?.ToString() ?? "?"} → v{CurrentDriveYamlVersion})...");
+                    await node.Client.Repository.Content.UpdateFile(
+                        node.Username, node.RepoName, DriveWorkflowPath,
+                        new UpdateFileRequest($"chore: upgrade Drive workflow to v{CurrentDriveYamlVersion}", yaml, current.Sha, node.DefaultBranch)
+                    ).ConfigureAwait(false);
+                }
+            }
+            catch (NotFoundException)
+            {
+                await CreateDriveWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private Task CreateDriveWorkflowAsync(CloudNode node, string yaml, CancellationToken cancellationToken)
+            => CreateOrRecoverWorkflowFileAsync(
+                node,
+                DriveWorkflowPath,
+                yaml,
+                "chore: init OctoFetch Drive workflow",
+                $"chore: re-sync Drive workflow to v{CurrentDriveYamlVersion}",
+                "Drive workflow",
+                cancellationToken);
+
+        private static string LoadEmbeddedYouTubeDriveWorkflowYaml()
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            var name = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith("youtube_drive_uploader.yml", StringComparison.OrdinalIgnoreCase))
+                ?? throw new OctoFetchException("Embedded YouTube\u2192Drive workflow YAML not found.");
+            using var stream = asm.GetManifestResourceStream(name)
+                ?? throw new OctoFetchException("Could not open embedded YouTube\u2192Drive workflow YAML stream.");
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            return reader.ReadToEnd();
+        }
+
+        private static int? ExtractYouTubeDriveYamlVersion(string content)
+        {
+            if (string.IsNullOrEmpty(content)) return null;
+            var match = Regex.Match(content, $@"{Regex.Escape(YouTubeDriveYamlVersionMarker)}\s*(\d+)");
+            return match.Success && int.TryParse(match.Groups[1].Value, out var v) ? v : null;
+        }
+
+        private async Task EnsureYouTubeDriveWorkflowAsync(CloudNode node, CancellationToken cancellationToken)
+        {
+            if (node.Client == null || node.Username == null) return;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var yaml = LoadEmbeddedYouTubeDriveWorkflowYaml();
+
+            try
+            {
+                var existing = await node.Client.Repository.Content
+                    .GetAllContents(node.Username, node.RepoName, YouTubeDriveWorkflowPath)
+                    .ConfigureAwait(false);
+
+                var current = existing?.FirstOrDefault();
+                if (current == null)
+                {
+                    await CreateYouTubeDriveWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(current.Sha))
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"\u26A0 Skipping YouTube→Drive workflow update on [{node.RepoName}]: GitHub returned a workflow file with no sha. " +
+                        "This usually means the API response was truncated or proxied through a misconfigured MITM. " +
+                        "Try again with MITM disabled, or check the Mitm log for engine errors.");
+                    return;
+                }
+
+                var existingVersion = ExtractYouTubeDriveYamlVersion(current.Content ?? string.Empty);
+                if (existingVersion is null || existingVersion < CurrentYouTubeDriveYamlVersion)
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"🔁 Updating YouTube→Drive workflow on [{node.RepoName}] (v{existingVersion?.ToString() ?? "?"} → v{CurrentYouTubeDriveYamlVersion})...");
+                    await node.Client.Repository.Content.UpdateFile(
+                        node.Username, node.RepoName, YouTubeDriveWorkflowPath,
+                        new UpdateFileRequest($"chore: upgrade YouTube→Drive workflow to v{CurrentYouTubeDriveYamlVersion}", yaml, current.Sha, node.DefaultBranch)
+                    ).ConfigureAwait(false);
+                }
+            }
+            catch (NotFoundException)
+            {
+                await CreateYouTubeDriveWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private Task CreateYouTubeDriveWorkflowAsync(CloudNode node, string yaml, CancellationToken cancellationToken)
+            => CreateOrRecoverWorkflowFileAsync(
+                node,
+                YouTubeDriveWorkflowPath,
+                yaml,
+                "chore: init OctoFetch YouTube→Drive workflow",
+                $"chore: re-sync YouTube→Drive workflow to v{CurrentYouTubeDriveYamlVersion}",
+                "YouTube→Drive workflow",
+                cancellationToken);
+
+        // -------- Release workflow injection --------------------------------
+
+        private static string LoadEmbeddedReleaseWorkflowYaml()
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            var name = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith("release_uploader.yml", StringComparison.OrdinalIgnoreCase))
+                ?? throw new OctoFetchException("Embedded Release workflow YAML not found.");
+            using var stream = asm.GetManifestResourceStream(name)
+                ?? throw new OctoFetchException("Could not open embedded Release workflow YAML stream.");
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            return reader.ReadToEnd();
+        }
+
+        private static int? ExtractReleaseYamlVersion(string content)
+        {
+            if (string.IsNullOrEmpty(content)) return null;
+            var match = Regex.Match(content, $@"{Regex.Escape(ReleaseYamlVersionMarker)}\s*(\d+)");
+            return match.Success && int.TryParse(match.Groups[1].Value, out var v) ? v : null;
+        }
+
+        private async Task EnsureReleaseWorkflowAsync(CloudNode node, CancellationToken cancellationToken)
+        {
+            if (node.Client == null || node.Username == null) return;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var yaml = LoadEmbeddedReleaseWorkflowYaml();
+
+            try
+            {
+                var existing = await node.Client.Repository.Content
+                    .GetAllContents(node.Username, node.RepoName, ReleaseWorkflowPath)
+                    .ConfigureAwait(false);
+
+                var current = existing?.FirstOrDefault();
+                if (current == null)
+                {
+                    await CreateReleaseWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(current.Sha))
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"\u26A0 Skipping Release workflow update on [{node.RepoName}]: GitHub returned a workflow file with no sha. " +
+                        "This usually means the API response was truncated or proxied through a misconfigured MITM. " +
+                        "Try again with MITM disabled, or check the Mitm log for engine errors.");
+                    return;
+                }
+
+                var existingVersion = ExtractReleaseYamlVersion(current.Content ?? string.Empty);
+                if (existingVersion is null || existingVersion < CurrentReleaseYamlVersion)
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"🔁 Updating Release workflow on [{node.RepoName}] (v{existingVersion?.ToString() ?? "?"} → v{CurrentReleaseYamlVersion})...");
+                    await node.Client.Repository.Content.UpdateFile(
+                        node.Username, node.RepoName, ReleaseWorkflowPath,
+                        new UpdateFileRequest($"chore: upgrade Release workflow to v{CurrentReleaseYamlVersion}", yaml, current.Sha, node.DefaultBranch)
+                    ).ConfigureAwait(false);
+                }
+            }
+            catch (NotFoundException)
+            {
+                await CreateReleaseWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private Task CreateReleaseWorkflowAsync(CloudNode node, string yaml, CancellationToken cancellationToken)
+            => CreateOrRecoverWorkflowFileAsync(
+                node,
+                ReleaseWorkflowPath,
+                yaml,
+                "chore: init OctoFetch Release workflow",
+                $"chore: re-sync Release workflow to v{CurrentReleaseYamlVersion}",
+                "Release workflow",
+                cancellationToken);
+
+        private static string LoadEmbeddedYouTubeReleaseWorkflowYaml()
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            var name = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith("youtube_release_uploader.yml", StringComparison.OrdinalIgnoreCase))
+                ?? throw new OctoFetchException("Embedded YouTube→Release workflow YAML not found.");
+            using var stream = asm.GetManifestResourceStream(name)
+                ?? throw new OctoFetchException("Could not open embedded YouTube→Release workflow YAML stream.");
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            return reader.ReadToEnd();
+        }
+
+        private static int? ExtractYouTubeReleaseYamlVersion(string content)
+        {
+            if (string.IsNullOrEmpty(content)) return null;
+            var match = Regex.Match(content, $@"{Regex.Escape(YouTubeReleaseYamlVersionMarker)}\s*(\d+)");
+            return match.Success && int.TryParse(match.Groups[1].Value, out var v) ? v : null;
+        }
+
+        private async Task EnsureYouTubeReleaseWorkflowAsync(CloudNode node, CancellationToken cancellationToken)
+        {
+            if (node.Client == null || node.Username == null) return;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var yaml = LoadEmbeddedYouTubeReleaseWorkflowYaml();
+
+            try
+            {
+                var existing = await node.Client.Repository.Content
+                    .GetAllContents(node.Username, node.RepoName, YouTubeReleaseWorkflowPath)
+                    .ConfigureAwait(false);
+
+                var current = existing?.FirstOrDefault();
+                if (current == null)
+                {
+                    await CreateYouTubeReleaseWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(current.Sha))
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"\u26A0 Skipping YouTube→Release workflow update on [{node.RepoName}]: GitHub returned a workflow file with no sha. " +
+                        "This usually means the API response was truncated or proxied through a misconfigured MITM. " +
+                        "Try again with MITM disabled, or check the Mitm log for engine errors.");
+                    return;
+                }
+
+                var existingVersion = ExtractYouTubeReleaseYamlVersion(current.Content ?? string.Empty);
+                if (existingVersion is null || existingVersion < CurrentYouTubeReleaseYamlVersion)
+                {
+                    _logger.Log(LogChannel.Settings,
+                        $"🔁 Updating YouTube→Release workflow on [{node.RepoName}] (v{existingVersion?.ToString() ?? "?"} → v{CurrentYouTubeReleaseYamlVersion})...");
+                    await node.Client.Repository.Content.UpdateFile(
+                        node.Username, node.RepoName, YouTubeReleaseWorkflowPath,
+                        new UpdateFileRequest($"chore: upgrade YouTube→Release workflow to v{CurrentYouTubeReleaseYamlVersion}", yaml, current.Sha, node.DefaultBranch)
+                    ).ConfigureAwait(false);
+                }
+            }
+            catch (NotFoundException)
+            {
+                await CreateYouTubeReleaseWorkflowAsync(node, yaml, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private Task CreateYouTubeReleaseWorkflowAsync(CloudNode node, string yaml, CancellationToken cancellationToken)
+            => CreateOrRecoverWorkflowFileAsync(
+                node,
+                YouTubeReleaseWorkflowPath,
+                yaml,
+                "chore: init OctoFetch YouTube→Release workflow",
+                $"chore: re-sync YouTube→Release workflow to v{CurrentYouTubeReleaseYamlVersion}",
+                "YouTube→Release workflow",
+                cancellationToken);
+
+        // -------- Shared CreateFile path with stale-read recovery -----------
+        private async Task CreateOrRecoverWorkflowFileAsync(
+            CloudNode node,
+            string workflowPath,
+            string yaml,
+            string createCommitMessage,
+            string recoverCommitMessage,
+            string displayName,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (node.Client == null || node.Username == null) return;
+
+            try
+            {
+                _logger.Log(LogChannel.Settings, $"\ud83d\udee0\ufe0f Injecting {displayName} into [{node.RepoName}]...");
+                await node.Client.Repository.Content.CreateFile(
+                    node.Username,
+                    node.RepoName,
+                    workflowPath,
+                    new CreateFileRequest(createCommitMessage, yaml, node.DefaultBranch)
+                ).ConfigureAwait(false);
+            }
+            catch (ApiValidationException avex) when (IsShaMissingValidationError(avex))
+            {
+                _logger.Log(LogChannel.Settings,
+                    $"\u21A9 {displayName} on [{node.RepoName}] already exists (stale GetAllContents read). Re-syncing via update...");
+                try
+                {
+                    var existing = await node.Client.Repository.Content
+                        .GetAllContents(node.Username, node.RepoName, workflowPath)
+                        .ConfigureAwait(false);
+                    var current = existing?.FirstOrDefault();
+                    if (current == null || string.IsNullOrEmpty(current.Sha))
+                    {
+                        _logger.Log(LogChannel.Settings,
+                            $"\u26A0 Could not re-read {displayName} on [{node.RepoName}] (still empty); leaving as-is.");
+                        return;
+                    }
+                    await node.Client.Repository.Content.UpdateFile(
+                        node.Username,
+                        node.RepoName,
+                        workflowPath,
+                        new UpdateFileRequest(recoverCommitMessage, yaml, current.Sha, node.DefaultBranch)
+                    ).ConfigureAwait(false);
+                    _logger.Log(LogChannel.Settings, $"\u2705 {displayName} re-synced on [{node.RepoName}].");
+                }
+                catch (Exception inner)
+                {
+                    _logger.LogException(LogChannel.Settings,
+                        $"Failed to recover {displayName} on [{node.RepoName}]", inner);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogException(LogChannel.Settings,
+                    $"Failed to inject {displayName} on [{node.RepoName}]", ex);
+            }
+        }
+
+        private static bool IsShaMissingValidationError(ApiValidationException ex)
+        {
+            var msg = ex.Message ?? string.Empty;
+            if (msg.IndexOf("sha", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                (msg.IndexOf("wasn't supplied", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 msg.IndexOf("was not supplied", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 msg.IndexOf("is missing", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return true;
+            }
+
+            var apiErrors = ex.ApiError?.Errors;
+            if (apiErrors != null)
+            {
+                foreach (var err in apiErrors)
+                {
+                    var field = err.Field ?? string.Empty;
+                    var code = err.Code ?? string.Empty;
+                    var emsg = err.Message ?? string.Empty;
+                    if (field.Equals("sha", StringComparison.OrdinalIgnoreCase) ||
+                        (emsg.IndexOf("sha", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                         (code.Equals("missing_field", StringComparison.OrdinalIgnoreCase) ||
+                          code.Equals("missing", StringComparison.OrdinalIgnoreCase))))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        // -------- Drive secrets push (Actions Secrets API) ------------------
+
+        public async Task PushDriveSecretsToAllNodesAsync(
+            DriveActionsCredentials credentials,
+            CancellationToken cancellationToken = default)
+        {
+            if (credentials == null) throw new ArgumentNullException(nameof(credentials));
+
+            CloudNode[] nodes;
+            lock (_activeNodesLock) nodes = _activeNodes.Where(n => n.IsConnected).ToArray();
+
+            if (nodes.Length == 0)
+            {
+                _logger.Log(LogChannel.Settings,
+                    "ℹ️ Drive secrets cached locally — no servers connected yet. They'll be pushed when you add one.");
+                return;
+            }
+
+            IDisposable? lease = _mitm != null
+                ? await _mitm.AcquireAsync("push-drive-secrets", cancellationToken).ConfigureAwait(false)
+                : null;
+
+            try
+            {
+                var tasks = nodes.Select(n => Task.Run(async () =>
+                {
+                    try
+                    {
+                        await PushDriveSecretsToNodeAsync(n, credentials, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (DriveSecretsScopeException scopeEx)
+                    {
+                        _logger.Log(LogChannel.Settings, $"ℹ️ {scopeEx.Message}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogException(LogChannel.Settings,
+                            $"Failed to push Drive secrets to [{n.RepoName}]", ex);
+                    }
+                }, cancellationToken)).ToList();
+
+                await Task.WhenAll(tasks).ConfigureAwait(false);
+            }
+            finally
+            {
+                lease?.Dispose();
+            }
+        }
+
+        private async Task PushDriveSecretsToNodeAsync(
+            CloudNode node,
+            DriveActionsCredentials credentials,
+            CancellationToken cancellationToken)
+        {
+            if (node.Client == null || node.Username == null || string.IsNullOrEmpty(node.Token))
+                return;
+
+            using var http = new System.Net.Http.HttpClient(
+                new CurlHttpMessageHandler(_logger, _allowInsecureSslProvider(), _mitm),
+                disposeHandler: true)
+            {
+                BaseAddress = new Uri("https://api.github.com/"),
+                Timeout = TimeSpan.FromSeconds(30),
+            };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("OctoFetch/1.0");
+            http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+            http.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", node.Token);
+            http.DefaultRequestHeaders.Add("X-GitHub-Api-Version", "2022-11-28");
+
+            var pubKeyPath = $"repos/{node.Username}/{node.RepoName}/actions/secrets/public-key";
+            using var keyResp = await http.GetAsync(pubKeyPath, cancellationToken).ConfigureAwait(false);
+            var keyBody = await keyResp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (!keyResp.IsSuccessStatusCode)
+            {
+                var status = (int)keyResp.StatusCode;
+                if (status == 403 || status == 404)
+                {
+                    throw new DriveSecretsScopeException(
+                        node.RepoName, status,
+                        $"PAT for [{node.RepoName}] can't access Actions secrets (HTTP {status}). " +
+                        "Drive uploads from this node are disabled until you reconnect with a PAT that has " +
+                        "the 'repo' scope (classic) or 'Secrets: Read and write' (fine-grained).");
+                }
+
+                throw new OctoFetchException(
+                    $"Couldn't fetch Actions public key for [{node.RepoName}] " +
+                    $"({status} {keyResp.ReasonPhrase}). " +
+                    "Make sure the PAT has 'repo' scope (or 'Secrets: Read and write' for fine-grained tokens).");
+            }
+
+            var keyJson = JObject.Parse(keyBody);
+            var publicKey = keyJson.Value<string>("key");
+            var keyId = keyJson.Value<string>("key_id");
+            if (string.IsNullOrEmpty(publicKey) || string.IsNullOrEmpty(keyId))
+                throw new OctoFetchException(
+                    $"GitHub returned an empty public key for [{node.RepoName}].");
+
+            await UpsertActionSecretAsync(http, node, publicKey, keyId, DriveSecretRefreshToken, credentials.RefreshToken, cancellationToken)
+                .ConfigureAwait(false);
+            await UpsertActionSecretAsync(http, node, publicKey, keyId, DriveSecretClientId, credentials.ClientId, cancellationToken)
+                .ConfigureAwait(false);
+            await UpsertActionSecretAsync(http, node, publicKey, keyId, DriveSecretClientSecret, credentials.ClientSecret, cancellationToken)
+                .ConfigureAwait(false);
+
+            _logger.Log(LogChannel.Settings,
+                $"🔐 Drive credentials pushed to [{node.RepoName}] as repo Actions secrets.");
+        }
+
+        private static async Task UpsertActionSecretAsync(
+            System.Net.Http.HttpClient http,
+            CloudNode node,
+            string publicKey,
+            string keyId,
+            string secretName,
+            string secretValue,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var encrypted = GitHubActionsSecretEncryptor.EncryptSecret(secretValue, publicKey);
+
+            var payload = new JObject
+            {
+                ["encrypted_value"] = encrypted,
+                ["key_id"] = keyId,
+            };
+
+            using var content = new System.Net.Http.StringContent(
+                payload.ToString(Newtonsoft.Json.Formatting.None),
+                Encoding.UTF8,
+                "application/json");
+
+            var url = $"repos/{node.Username}/{node.RepoName}/actions/secrets/{secretName}";
+            using var resp = await http.PutAsync(url, content, cancellationToken).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+            {
+                var status = (int)resp.StatusCode;
+                var body = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                if (status == 403 || status == 404)
+                {
+                    throw new DriveSecretsScopeException(
+                        node.RepoName, status,
+                        $"PAT for [{node.RepoName}] can't write Actions secrets (HTTP {status}). " +
+                        "Drive uploads from this node are disabled until you reconnect with a PAT that has " +
+                        "the 'repo' scope (classic) or 'Secrets: Read and write' (fine-grained).");
+                }
+                throw new OctoFetchException(
+                    $"Failed to upsert secret '{secretName}' on [{node.RepoName}] " +
+                    $"({status} {resp.ReasonPhrase}): {Truncate(body, 200)}");
+            }
+        }
+
+        private static string Truncate(string? s, int max)
+            => string.IsNullOrEmpty(s) ? string.Empty : (s!.Length <= max ? s : s.Substring(0, max) + "…");
 
         // -------- Round-robin -----------------------------------------------
         private CloudNode GetNextAvailableNode()
@@ -273,7 +1007,7 @@ namespace OctoFetch.Services
 
         private static readonly HashSet<string> KnownTags =
             new(StringComparer.OrdinalIgnoreCase)
-            { "Movies", "Software", "Games", "Music", "Books", "Documents", "Other" };
+            { "Movies", "Software", "Games", "Music", "Books", "Documents", "YouTube", "Other" };
 
         public static (string Tag, string DisplayName) ParseFolderTag(string folderName)
         {
@@ -289,7 +1023,7 @@ namespace OctoFetch.Services
 
         private static string BuildFolderName(string targetUrl, bool isSafe, bool isObfuscated, string? tag)
         {
-            var rawName = Uri.UnescapeDataString(targetUrl.Split('?')[0].Split('/').Last());
+            var rawName = UrlFileNameInferrer.Infer(targetUrl, fallback: "DL");
             var nameNoExt = Path.GetFileNameWithoutExtension(rawName);
             if (string.IsNullOrWhiteSpace(nameNoExt)) nameNoExt = "DL";
 
@@ -333,6 +1067,7 @@ namespace OctoFetch.Services
             Action<string, string> onLinkFetched,
             Action<CloudNode, long>? onRunResolved = null,
             Action<int, string>? onProgress = null,
+            Action<CloudNode>? onNodeAcquired = null,
             CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(targetUrl))
@@ -342,8 +1077,13 @@ namespace OctoFetch.Services
             if (node.Client == null || node.Username == null)
                 throw new NodeConnectionException(node.RepoName, "Client not initialized.");
 
+            try { onNodeAcquired?.Invoke(node); }
+            catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "onNodeAcquired callback failed", ex); }
+
             var folderName = BuildFolderName(targetUrl, isSafe, isObfuscated, tag);
             _logger.Log(LogChannel.Downloader, $"🚀 [{node.RepoName}] Task started. Folder: {folderName}");
+
+            var leechFileName = UrlFileNameInferrer.TryInferFilename(targetUrl);
 
             var inputs = new Dictionary<string, object>
             {
@@ -351,16 +1091,21 @@ namespace OctoFetch.Services
                 ["folder_name"] = folderName,
                 ["safe_mode"] = isSafe ? "true" : "false",
                 ["chunk_size"] = _chunkSizeProvider(),
+                ["file_name"] = leechFileName,
             };
 
-            var dispatchTime = DateTimeOffset.UtcNow.AddSeconds(-2);
+            var dispatchTime = DateTimeOffset.UtcNow.AddSeconds(-60);
 
             try
             {
+                await EnsureWorkflowDispatchableAsync(node, WorkflowFileName, cancellationToken).ConfigureAwait(false);
+
                 await node.Client.Actions.Workflows.CreateDispatch(
                     node.Username, node.RepoName, WorkflowFileName,
                     new CreateWorkflowDispatch(node.DefaultBranch) { Inputs = inputs }
                 ).ConfigureAwait(false);
+
+                RecordDispatch(node, folderName, dispatchTime, WorkflowFileName);
 
                 _logger.Log(LogChannel.Downloader, "⏳ Trigger sent. Locating workflow run...");
                 await MonitorAndFetchAsync(node, folderName, dispatchTime, onLinkFetched, onRunResolved, onProgress, cancellationToken).ConfigureAwait(false);
@@ -376,14 +1121,994 @@ namespace OctoFetch.Services
             }
         }
 
+        public async Task TriggerYouTubeLeechAsync(
+            string videoUrl,
+            string videoTitle,
+            string format,
+            string quality,
+            bool isSafe,
+            bool isObfuscated,
+            string? tag,
+            Action<string, string> onLinkFetched,
+            Action<CloudNode, long>? onRunResolved = null,
+            Action<int, string>? onProgress = null,
+            Action<CloudNode>? onNodeAcquired = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(videoUrl))
+                throw new ArgumentException("Video URL must not be empty.", nameof(videoUrl));
+
+            var node = GetNextAvailableNode();
+            if (node.Client == null || node.Username == null)
+                throw new NodeConnectionException(node.RepoName, "Client not initialized.");
+
+            try { onNodeAcquired?.Invoke(node); }
+            catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "onNodeAcquired callback failed", ex); }
+
+            var workflowFile = YouTubeWorkflowFileName;
+
+            var folderName = BuildFolderName(videoUrl, isSafe, isObfuscated, tag ?? "YouTube");
+            _logger.Log(LogChannel.Downloader, $"🎬 [{node.RepoName}] YouTube download started. Folder: {folderName}");
+
+            var inputs = new Dictionary<string, object>
+            {
+                ["video_url"] = videoUrl,
+                ["folder_name"] = folderName,
+                ["output_format"] = format,
+                ["desired_quality"] = quality,
+                ["chunk_size"] = _chunkSizeProvider(),
+            };
+
+            var dispatchTime = DateTimeOffset.UtcNow.AddSeconds(-60);
+
+            try
+            {
+                await EnsureWorkflowDispatchableAsync(node, workflowFile, cancellationToken).ConfigureAwait(false);
+
+                await node.Client.Actions.Workflows.CreateDispatch(
+                    node.Username, node.RepoName, workflowFile,
+                    new CreateWorkflowDispatch(node.DefaultBranch) { Inputs = inputs }
+                ).ConfigureAwait(false);
+
+                RecordDispatch(node, folderName, dispatchTime, workflowFile);
+
+                _logger.Log(LogChannel.Downloader, $"⏳ YouTube trigger sent for: {videoTitle}. Locating workflow run...");
+                await MonitorYouTubeAndFetchAsync(node, folderName, dispatchTime, onLinkFetched, onRunResolved, onProgress, cancellationToken, workflowFile).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.Log(LogChannel.Downloader, "🛑 YouTube download cancelled by user.");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new WorkflowDispatchException($"YouTube trigger failed on [{node.RepoName}]: {ex.Message}", ex);
+            }
+        }
+
+        // -------- Drive triggers --------------------------------------------
+        public async Task TriggerDriveLeechAsync(
+            string targetUrl,
+            bool isSafe,
+            string? category,
+            Action<string, string> onLinkFetched,
+            Action<CloudNode, long>? onRunResolved = null,
+            Action<int, string>? onProgress = null,
+            Action<CloudNode>? onNodeAcquired = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(targetUrl))
+                throw new ArgumentException("Target URL must not be empty.", nameof(targetUrl));
+
+            var node = GetNextAvailableNode();
+            if (node.Client == null || node.Username == null)
+                throw new NodeConnectionException(node.RepoName, "Client not initialized.");
+
+            try { onNodeAcquired?.Invoke(node); }
+            catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "onNodeAcquired callback failed", ex); }
+
+            var resolvedCategory = string.IsNullOrWhiteSpace(category)
+                ? TagInferrer.Resolve(null, targetUrl)
+                : category!;
+            var folderName = BuildFolderName(targetUrl, isSafe, isObfuscated: false, resolvedCategory);
+
+            _logger.Log(LogChannel.Downloader,
+                $"☁️ [{node.RepoName}] Drive upload started. Folder: {folderName} (category: {resolvedCategory})");
+
+            var rawName = UrlFileNameInferrer.TryInferFilename(targetUrl);
+
+            var inputs = new Dictionary<string, object>
+            {
+                ["file_url"] = targetUrl,
+                ["folder_name"] = folderName,
+                ["safe_mode"] = isSafe ? "true" : "false",
+                ["drive_category"] = resolvedCategory,
+                ["drive_file_name"] = rawName,
+            };
+
+            var dispatchTime = DateTimeOffset.UtcNow.AddSeconds(-60);
+
+            try
+            {
+                await EnsureWorkflowDispatchableAsync(node, DriveWorkflowFileName, cancellationToken).ConfigureAwait(false);
+
+                await node.Client.Actions.Workflows.CreateDispatch(
+                    node.Username, node.RepoName, DriveWorkflowFileName,
+                    new CreateWorkflowDispatch(node.DefaultBranch) { Inputs = inputs }
+                ).ConfigureAwait(false);
+
+                RecordDispatch(node, folderName, dispatchTime, DriveWorkflowFileName);
+
+                _logger.Log(LogChannel.Downloader, "⏳ Drive trigger sent. Locating workflow run...");
+                await MonitorDriveAndFetchAsync(node, folderName, dispatchTime, onLinkFetched, onRunResolved, onProgress, DriveWorkflowFileName, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.Log(LogChannel.Downloader, "🛑 Drive upload cancelled by user.");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new WorkflowDispatchException($"Drive trigger failed on [{node.RepoName}]: {ex.Message}", ex);
+            }
+        }
+
+        public async Task TriggerYouTubeDriveLeechAsync(
+            string videoUrl,
+            string videoTitle,
+            string format,
+            string quality,
+            string? category,
+            Action<string, string> onLinkFetched,
+            Action<CloudNode, long>? onRunResolved = null,
+            Action<int, string>? onProgress = null,
+            Action<CloudNode>? onNodeAcquired = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(videoUrl))
+                throw new ArgumentException("Video URL must not be empty.", nameof(videoUrl));
+
+            var node = GetNextAvailableNode();
+            if (node.Client == null || node.Username == null)
+                throw new NodeConnectionException(node.RepoName, "Client not initialized.");
+
+            try { onNodeAcquired?.Invoke(node); }
+            catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "onNodeAcquired callback failed", ex); }
+
+            var resolvedCategory = string.IsNullOrWhiteSpace(category) ? "YouTube" : category!;
+            var folderName = BuildFolderName(videoUrl, isSafe: false, isObfuscated: false, resolvedCategory);
+
+            _logger.Log(LogChannel.Downloader,
+                $"🎬☁️ [{node.RepoName}] YouTube→Drive started. Folder: {folderName} (category: {resolvedCategory})");
+
+            var inputs = new Dictionary<string, object>
+            {
+                ["video_url"] = videoUrl,
+                ["folder_name"] = folderName,
+                ["output_format"] = format,
+                ["desired_quality"] = quality,
+                ["drive_category"] = resolvedCategory,
+            };
+
+            var dispatchTime = DateTimeOffset.UtcNow.AddSeconds(-60);
+
+            try
+            {
+                await EnsureWorkflowDispatchableAsync(node, YouTubeDriveWorkflowFileName, cancellationToken).ConfigureAwait(false);
+
+                await node.Client.Actions.Workflows.CreateDispatch(
+                    node.Username, node.RepoName, YouTubeDriveWorkflowFileName,
+                    new CreateWorkflowDispatch(node.DefaultBranch) { Inputs = inputs }
+                ).ConfigureAwait(false);
+
+                RecordDispatch(node, folderName, dispatchTime, YouTubeDriveWorkflowFileName);
+
+                _logger.Log(LogChannel.Downloader, $"⏳ YouTube→Drive trigger sent for: {videoTitle}. Locating workflow run...");
+                await MonitorDriveAndFetchAsync(node, folderName, dispatchTime, onLinkFetched, onRunResolved, onProgress, YouTubeDriveWorkflowFileName, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.Log(LogChannel.Downloader, "🛑 YouTube→Drive cancelled by user.");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new WorkflowDispatchException($"YouTube→Drive trigger failed on [{node.RepoName}]: {ex.Message}", ex);
+            }
+        }
+
+        // -------- Release uploader triggers ---------------------------------
+
+        public async Task TriggerReleaseLeechAsync(
+            string targetUrl,
+            string releaseTag,
+            string? releaseTitle,
+            bool isSafe,
+            long chunkThresholdBytes,
+            string? tag,
+            Action<string, string> onLinkFetched,
+            Action<CloudNode, long>? onRunResolved = null,
+            Action<int, string>? onProgress = null,
+            Action<CloudNode>? onNodeAcquired = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(targetUrl))
+                throw new ArgumentException("Target URL must not be empty.", nameof(targetUrl));
+            if (string.IsNullOrWhiteSpace(releaseTag))
+                throw new ArgumentException("Release tag must not be empty.", nameof(releaseTag));
+
+            var node = GetNextAvailableNode();
+            if (node.Client == null || node.Username == null)
+                throw new NodeConnectionException(node.RepoName, "Client not initialized.");
+
+            try { onNodeAcquired?.Invoke(node); }
+            catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "onNodeAcquired callback failed", ex); }
+
+            var resolvedTag = string.IsNullOrWhiteSpace(tag)
+                ? TagInferrer.Resolve(null, targetUrl)
+                : tag!;
+            var folderName = BuildFolderName(targetUrl, isSafe, isObfuscated: false, resolvedTag);
+            var sanitizedReleaseTag = SanitizeReleaseTag(releaseTag);
+
+            _logger.Log(LogChannel.Downloader,
+                $"🏷️ [{node.RepoName}] Release upload started. Tag: {sanitizedReleaseTag} • Folder: {folderName}");
+
+            var rawName = UrlFileNameInferrer.TryInferFilename(targetUrl);
+
+            var inputs = new Dictionary<string, object>
+            {
+                ["file_url"] = targetUrl,
+                ["folder_name"] = folderName,
+                ["release_tag"] = sanitizedReleaseTag,
+                ["release_title"] = releaseTitle ?? string.Empty,
+                ["safe_mode"] = isSafe ? "true" : "false",
+                ["asset_name"] = rawName,
+                ["chunk_threshold_bytes"] = NormaliseChunkThreshold(chunkThresholdBytes).ToString(),
+            };
+
+            var dispatchTime = DateTimeOffset.UtcNow.AddSeconds(-60);
+
+            try
+            {
+                await EnsureWorkflowDispatchableAsync(node, ReleaseWorkflowFileName, cancellationToken).ConfigureAwait(false);
+
+                await node.Client.Actions.Workflows.CreateDispatch(
+                    node.Username, node.RepoName, ReleaseWorkflowFileName,
+                    new CreateWorkflowDispatch(node.DefaultBranch) { Inputs = inputs }
+                ).ConfigureAwait(false);
+
+                RecordDispatch(node, folderName, dispatchTime, ReleaseWorkflowFileName);
+
+                _logger.Log(LogChannel.Downloader, "⏳ Release trigger sent. Locating workflow run...");
+                await MonitorReleaseAndFetchAsync(node, folderName, dispatchTime, onLinkFetched, onRunResolved, onProgress, ReleaseWorkflowFileName, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.Log(LogChannel.Downloader, "🛑 Release upload cancelled by user.");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new WorkflowDispatchException($"Release trigger failed on [{node.RepoName}]: {ex.Message}", ex);
+            }
+        }
+
+        public async Task TriggerYouTubeReleaseLeechAsync(
+            string videoUrl,
+            string videoTitle,
+            string format,
+            string quality,
+            string releaseTag,
+            string? releaseTitle,
+            long chunkThresholdBytes,
+            string? tag,
+            Action<string, string> onLinkFetched,
+            Action<CloudNode, long>? onRunResolved = null,
+            Action<int, string>? onProgress = null,
+            Action<CloudNode>? onNodeAcquired = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(videoUrl))
+                throw new ArgumentException("Video URL must not be empty.", nameof(videoUrl));
+            if (string.IsNullOrWhiteSpace(releaseTag))
+                throw new ArgumentException("Release tag must not be empty.", nameof(releaseTag));
+
+            var node = GetNextAvailableNode();
+            if (node.Client == null || node.Username == null)
+                throw new NodeConnectionException(node.RepoName, "Client not initialized.");
+
+            try { onNodeAcquired?.Invoke(node); }
+            catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "onNodeAcquired callback failed", ex); }
+
+            var resolvedTag = string.IsNullOrWhiteSpace(tag) ? "YouTube" : tag!;
+            var folderName = BuildFolderName(videoUrl, isSafe: false, isObfuscated: false, resolvedTag);
+            var sanitizedReleaseTag = SanitizeReleaseTag(releaseTag);
+
+            _logger.Log(LogChannel.Downloader,
+                $"🎬🏷️ [{node.RepoName}] YouTube→Release started. Tag: {sanitizedReleaseTag} • Folder: {folderName}");
+
+            var inputs = new Dictionary<string, object>
+            {
+                ["video_url"] = videoUrl,
+                ["folder_name"] = folderName,
+                ["release_tag"] = sanitizedReleaseTag,
+                ["release_title"] = releaseTitle ?? string.Empty,
+                ["output_format"] = format,
+                ["desired_quality"] = quality,
+                ["chunk_threshold_bytes"] = NormaliseChunkThreshold(chunkThresholdBytes).ToString(),
+            };
+
+            var dispatchTime = DateTimeOffset.UtcNow.AddSeconds(-60);
+
+            try
+            {
+                await EnsureWorkflowDispatchableAsync(node, YouTubeReleaseWorkflowFileName, cancellationToken).ConfigureAwait(false);
+
+                await node.Client.Actions.Workflows.CreateDispatch(
+                    node.Username, node.RepoName, YouTubeReleaseWorkflowFileName,
+                    new CreateWorkflowDispatch(node.DefaultBranch) { Inputs = inputs }
+                ).ConfigureAwait(false);
+
+                RecordDispatch(node, folderName, dispatchTime, YouTubeReleaseWorkflowFileName);
+
+                _logger.Log(LogChannel.Downloader, $"⏳ YouTube→Release trigger sent for: {videoTitle}. Locating workflow run...");
+                await MonitorReleaseAndFetchAsync(node, folderName, dispatchTime, onLinkFetched, onRunResolved, onProgress, YouTubeReleaseWorkflowFileName, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.Log(LogChannel.Downloader, "🛑 YouTube→Release cancelled by user.");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                throw new WorkflowDispatchException($"YouTube→Release trigger failed on [{node.RepoName}]: {ex.Message}", ex);
+            }
+        }
+
+        private const long ReleaseAssetCeilingBytes = 2040109465L;
+
+        private static long NormaliseChunkThreshold(long requested)
+        {
+            if (requested <= 0) return ReleaseAssetCeilingBytes;
+            return Math.Min(requested, ReleaseAssetCeilingBytes);
+        }
+
+        private static string SanitizeReleaseTag(string tag)
+        {
+            var trimmed = (tag ?? string.Empty).Trim();
+            if (trimmed.Length == 0) return "octofetch";
+            var sb = new StringBuilder(trimmed.Length);
+            foreach (var ch in trimmed)
+            {
+                if (char.IsLetterOrDigit(ch) || ch == '-' || ch == '_' || ch == '.' || ch == '+')
+                    sb.Append(ch);
+                else
+                    sb.Append('-');
+            }
+            if (sb.Length > 80) sb.Length = 80;
+            return sb.ToString().Trim('-', '.');
+        }
+
+        private async Task MonitorDriveAndFetchAsync(
+            CloudNode node,
+            string targetFolder,
+            DateTimeOffset dispatchTime,
+            Action<string, string> onLinkFetched,
+            Action<CloudNode, long>? onRunResolved,
+            Action<int, string>? onProgress,
+            string workflowFile,
+            CancellationToken cancellationToken)
+        {
+            try { onProgress?.Invoke(0, "Initializing…"); } catch { }
+
+            var run = await ResolveDispatchedRunAsync(node, targetFolder, dispatchTime, onProgress, cancellationToken, workflowFile)
+                .ConfigureAwait(false);
+            if (run == null)
+            {
+                _logger.Log(LogChannel.Downloader, "❌ Could not locate the Drive workflow run. Check GitHub UI.");
+                onProgress?.Invoke(0, "Run not found");
+                return;
+            }
+
+            try { onRunResolved?.Invoke(node, run.Id); }
+            catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "onRunResolved callback failed", ex); }
+
+            var pollInterval = Math.Max(2, _pollIntervalSecondsProvider());
+            var maxAttempts = Math.Max(1, _pollMaxAttemptsProvider());
+
+            int lastKnownPercent = 0;
+            string lastKnownLabel = "Queued";
+            int consecutiveErrors = 0;
+            const int errorLogThreshold = 3;
+
+            string? lastLoggedStatusStr = null;
+            int lastLoggedPercent = -1;
+            string lastLoggedLabel = string.Empty;
+
+            for (var attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var current = await node.Client!.Actions.Workflows.Runs
+                        .Get(node.Username!, node.RepoName, run.Id)
+                        .ConfigureAwait(false);
+
+                    var (percent, label) = await ComputeRealProgressAsync(node, run.Id, current, cancellationToken).ConfigureAwait(false);
+                    if (percent.HasValue)
+                    {
+                        lastKnownPercent = percent.Value;
+                        lastKnownLabel = label;
+                    }
+
+                    try { onProgress?.Invoke(lastKnownPercent, lastKnownLabel); }
+                    catch (Exception cb) { _logger.LogException(LogChannel.Downloader, "onProgress callback failed", cb); }
+
+                    consecutiveErrors = 0;
+
+                    if (current.Status == WorkflowRunStatus.Completed)
+                    {
+                        if (current.Conclusion == WorkflowRunConclusion.Success)
+                        {
+                            _logger.Log(LogChannel.Downloader, "✅ Drive upload completed! Fetching share links...");
+                            try { onProgress?.Invoke(100, "Completed"); } catch { }
+                            await FetchDriveLinksFromManifestAsync(node, targetFolder, onLinkFetched, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            _logger.Log(LogChannel.Downloader,
+                                $"❌ Drive workflow finished with conclusion: {current.Conclusion}.");
+                            try { onProgress?.Invoke(lastKnownPercent, $"Failed: {current.Conclusion}"); } catch { }
+                        }
+                        return;
+                    }
+
+                    var currentStatusStr = current.Status.StringValue ?? string.Empty;
+                    var statusChanged = !string.Equals(currentStatusStr, lastLoggedStatusStr, StringComparison.OrdinalIgnoreCase);
+                    var progressChanged = current.Status == WorkflowRunStatus.InProgress
+                        && (lastKnownPercent != lastLoggedPercent
+                            || !string.Equals(lastKnownLabel, lastLoggedLabel, StringComparison.Ordinal));
+
+                    if (statusChanged || progressChanged)
+                    {
+                        _logger.Log(LogChannel.Downloader,
+                            current.Status == WorkflowRunStatus.Queued
+                                ? $"⏳ [{node.RepoName}] Drive: waiting for a runner..."
+                                : current.Status == WorkflowRunStatus.InProgress
+                                    ? $"☁️ [{node.RepoName}] Drive ({lastKnownPercent}%): {lastKnownLabel}"
+                                    : $"🔄 [{node.RepoName}] Status: {current.Status}");
+                        lastLoggedStatusStr = currentStatusStr;
+                        lastLoggedPercent = lastKnownPercent;
+                        lastLoggedLabel = lastKnownLabel;
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    consecutiveErrors++;
+                    try { onProgress?.Invoke(lastKnownPercent, lastKnownLabel); } catch { }
+                    if (consecutiveErrors >= errorLogThreshold)
+                    {
+                        _logger.LogException(LogChannel.Downloader,
+                            $"Network error while polling Drive run ({consecutiveErrors} consecutive)", ex);
+                        if (consecutiveErrors % 5 == 0) consecutiveErrors = errorLogThreshold;
+                    }
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(pollInterval), cancellationToken).ConfigureAwait(false);
+            }
+
+            _logger.Log(LogChannel.Downloader,
+                "❌ Drive monitor timeout. The GitHub queue is taking too long; check GitHub directly.");
+        }
+
+        private async Task FetchDriveLinksFromManifestAsync(
+            CloudNode node,
+            string folder,
+            Action<string, string> onLinkFetched,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                var path = $"{DriveManifestRoot}/{folder}/links.json";
+                var contents = await node.Client!.Repository.Content
+                    .GetAllContents(node.Username!, node.RepoName, path)
+                    .ConfigureAwait(false);
+
+                var manifest = contents?.FirstOrDefault();
+                if (manifest == null)
+                {
+                    _logger.Log(LogChannel.Downloader,
+                        $"⚠️ Drive manifest missing on [{node.RepoName}] for folder '{folder}'.");
+                    return;
+                }
+
+                string raw = manifest.Content ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(raw) && !string.IsNullOrWhiteSpace(manifest.EncodedContent))
+                {
+                    raw = Encoding.UTF8.GetString(Convert.FromBase64String(manifest.EncodedContent));
+                }
+                if (string.IsNullOrWhiteSpace(raw))
+                {
+                    _logger.Log(LogChannel.Downloader,
+                        $"⚠️ Drive manifest on [{node.RepoName}] for '{folder}' was empty.");
+                    return;
+                }
+
+                var parsed = JObject.Parse(raw);
+                var files = parsed["files"] as JArray;
+                if (files == null || files.Count == 0)
+                {
+                    _logger.Log(LogChannel.Downloader,
+                        $"⚠️ Drive manifest on [{node.RepoName}] listed no files.");
+                    return;
+                }
+
+                var count = 0;
+                foreach (var f in files)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var name = f.Value<string>("name");
+                    var url = f.Value<string>("url") ?? f.Value<string>("share_url");
+                    if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(url)) continue;
+                    onLinkFetched.Invoke(name!, url!);
+                    count++;
+                }
+
+                if (count > 0)
+                    _logger.Log(LogChannel.Downloader, $"🔗 {count} Drive link(s) ready in the Links panel.");
+            }
+            catch (NotFoundException)
+            {
+                _logger.Log(LogChannel.Downloader,
+                    $"⚠️ Drive manifest not found for folder '{folder}' on [{node.RepoName}].");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogException(LogChannel.Downloader, "Drive manifest fetch error", ex);
+            }
+        }
+
+        // -------- Release monitor + manifest -------------------------------
+        private async Task MonitorReleaseAndFetchAsync(
+            CloudNode node,
+            string targetFolder,
+            DateTimeOffset dispatchTime,
+            Action<string, string> onLinkFetched,
+            Action<CloudNode, long>? onRunResolved,
+            Action<int, string>? onProgress,
+            string workflowFile,
+            CancellationToken cancellationToken)
+        {
+            try { onProgress?.Invoke(0, "Initializing…"); } catch { }
+
+            var run = await ResolveDispatchedRunAsync(node, targetFolder, dispatchTime, onProgress, cancellationToken, workflowFile)
+                .ConfigureAwait(false);
+            if (run == null)
+            {
+                _logger.Log(LogChannel.Downloader, "❌ Could not locate the Release workflow run. Check GitHub UI.");
+                onProgress?.Invoke(0, "Run not found");
+                return;
+            }
+
+            try { onRunResolved?.Invoke(node, run.Id); }
+            catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "onRunResolved callback failed", ex); }
+
+            var pollInterval = Math.Max(2, _pollIntervalSecondsProvider());
+            var maxAttempts = Math.Max(1, _pollMaxAttemptsProvider());
+
+            int lastKnownPercent = 0;
+            string lastKnownLabel = "Queued";
+            int consecutiveErrors = 0;
+            const int errorLogThreshold = 3;
+
+            string? lastLoggedStatusStr = null;
+            int lastLoggedPercent = -1;
+            string lastLoggedLabel = string.Empty;
+
+            for (var attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var current = await node.Client!.Actions.Workflows.Runs
+                        .Get(node.Username!, node.RepoName, run.Id)
+                        .ConfigureAwait(false);
+
+                    var (percent, label) = await ComputeRealProgressAsync(node, run.Id, current, cancellationToken).ConfigureAwait(false);
+                    if (percent.HasValue)
+                    {
+                        lastKnownPercent = percent.Value;
+                        lastKnownLabel = label;
+                    }
+
+                    try { onProgress?.Invoke(lastKnownPercent, lastKnownLabel); }
+                    catch (Exception cb) { _logger.LogException(LogChannel.Downloader, "onProgress callback failed", cb); }
+
+                    consecutiveErrors = 0;
+
+                    if (current.Status == WorkflowRunStatus.Completed)
+                    {
+                        if (current.Conclusion == WorkflowRunConclusion.Success)
+                        {
+                            _logger.Log(LogChannel.Downloader, "✅ Release upload completed! Fetching asset links...");
+                            try { onProgress?.Invoke(100, "Completed"); } catch { }
+                            await FetchReleaseLinksFromManifestAsync(node, targetFolder, onLinkFetched, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            _logger.Log(LogChannel.Downloader,
+                                $"❌ Release workflow finished with conclusion: {current.Conclusion}.");
+                            try { onProgress?.Invoke(lastKnownPercent, $"Failed: {current.Conclusion}"); } catch { }
+                        }
+                        return;
+                    }
+
+                    var currentStatusStr = current.Status.StringValue ?? string.Empty;
+                    var statusChanged = !string.Equals(currentStatusStr, lastLoggedStatusStr, StringComparison.OrdinalIgnoreCase);
+                    var progressChanged = current.Status == WorkflowRunStatus.InProgress
+                        && (lastKnownPercent != lastLoggedPercent
+                            || !string.Equals(lastKnownLabel, lastLoggedLabel, StringComparison.Ordinal));
+
+                    if (statusChanged || progressChanged)
+                    {
+                        _logger.Log(LogChannel.Downloader,
+                            current.Status == WorkflowRunStatus.Queued
+                                ? $"⏳ [{node.RepoName}] Release: waiting for a runner..."
+                                : current.Status == WorkflowRunStatus.InProgress
+                                    ? $"🏷️ [{node.RepoName}] Release ({lastKnownPercent}%): {lastKnownLabel}"
+                                    : $"🔄 [{node.RepoName}] Status: {current.Status}");
+                        lastLoggedStatusStr = currentStatusStr;
+                        lastLoggedPercent = lastKnownPercent;
+                        lastLoggedLabel = lastKnownLabel;
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    consecutiveErrors++;
+                    if (consecutiveErrors >= errorLogThreshold)
+                    {
+                        _logger.LogException(LogChannel.Downloader, "Release monitor poll error", ex);
+                        consecutiveErrors = 0;
+                    }
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(pollInterval), cancellationToken).ConfigureAwait(false);
+            }
+
+            _logger.Log(LogChannel.Downloader, "⌛ Release workflow timed out before completion.");
+            onProgress?.Invoke(lastKnownPercent, "Timed out");
+        }
+
+        private async Task FetchReleaseLinksFromManifestAsync(
+            CloudNode node,
+            string folder,
+            Action<string, string> onLinkFetched,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                var path = $"{ReleaseManifestRoot}/{folder}/links.json";
+                var contents = await node.Client!.Repository.Content
+                    .GetAllContents(node.Username!, node.RepoName, path)
+                    .ConfigureAwait(false);
+
+                var manifest = contents?.FirstOrDefault();
+                if (manifest == null)
+                {
+                    _logger.Log(LogChannel.Downloader,
+                        $"⚠️ Release manifest missing on [{node.RepoName}] for folder '{folder}'.");
+                    return;
+                }
+
+                string raw = manifest.Content ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(raw) && !string.IsNullOrWhiteSpace(manifest.EncodedContent))
+                {
+                    raw = Encoding.UTF8.GetString(Convert.FromBase64String(manifest.EncodedContent));
+                }
+                if (string.IsNullOrWhiteSpace(raw))
+                {
+                    _logger.Log(LogChannel.Downloader,
+                        $"⚠️ Release manifest on [{node.RepoName}] for '{folder}' was empty.");
+                    return;
+                }
+
+                var parsed = JObject.Parse(raw);
+                var files = parsed["files"] as JArray;
+                if (files == null || files.Count == 0)
+                {
+                    _logger.Log(LogChannel.Downloader,
+                        $"⚠️ Release manifest on [{node.RepoName}] listed no files.");
+                    return;
+                }
+
+                var count = 0;
+                foreach (var f in files)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var name = f.Value<string>("name");
+                    var url = f.Value<string>("url");
+                    if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(url)) continue;
+                    onLinkFetched.Invoke(name!, url!);
+                    count++;
+                }
+
+                if (count > 0)
+                    _logger.Log(LogChannel.Downloader, $"🔗 {count} Release asset link(s) ready in the Links panel.");
+            }
+            catch (NotFoundException)
+            {
+                _logger.Log(LogChannel.Downloader,
+                    $"⚠️ Release manifest not found for folder '{folder}' on [{node.RepoName}].");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogException(LogChannel.Downloader, "Release manifest fetch error", ex);
+            }
+        }
+
+        // -------- Release CRUD over Octokit ---------------------------------
+
+        public async Task<IReadOnlyList<ReleaseFileItem>> ListReleaseAssetsAsync(
+            CancellationToken cancellationToken = default)
+        {
+            CloudNode[] nodes;
+            lock (_activeNodesLock) nodes = _activeNodes.Where(n => n.IsConnected && n.Client != null && n.Username != null).ToArray();
+
+            var results = new List<ReleaseFileItem>();
+            foreach (var node in nodes)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    var releases = await node.Client!.Repository.Release
+                        .GetAll(node.Username!, node.RepoName)
+                        .ConfigureAwait(false);
+
+                    foreach (var release in releases)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var assets = release.Assets ?? (IReadOnlyList<ReleaseAsset>)Array.Empty<ReleaseAsset>();
+                        var isSplit = assets.Count > 1;
+                        foreach (var a in assets)
+                        {
+                            results.Add(new ReleaseFileItem
+                            {
+                                AssetId = a.Id,
+                                Tag = release.TagName ?? string.Empty,
+                                Name = a.Name ?? string.Empty,
+                                DownloadUrl = a.BrowserDownloadUrl ?? string.Empty,
+                                ApiUrl = a.Url ?? string.Empty,
+                                SizeBytes = a.Size,
+                                DownloadCount = a.DownloadCount,
+                                RepoFullName = $"{node.Username}/{node.RepoName}",
+                                ReleaseHtmlUrl = release.HtmlUrl,
+                                IsSplitPart = isSplit,
+                            });
+                        }
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    _logger.LogException(LogChannel.Settings, $"List releases failed for [{node.RepoName}]", ex);
+                }
+            }
+            return results;
+        }
+
+        public async Task<ReleaseFileItem?> RenameReleaseAssetAsync(
+            ReleaseFileItem item,
+            string newName,
+            CancellationToken cancellationToken = default)
+        {
+            if (item == null) throw new ArgumentNullException(nameof(item));
+            if (string.IsNullOrWhiteSpace(newName)) throw new ArgumentException("Name must not be empty.", nameof(newName));
+
+            var node = FindNodeByFullName(item.RepoFullName);
+            if (node?.Client == null || node.Username == null)
+            {
+                _logger.Log(LogChannel.Settings, $"⚠️ Cannot rename — no connected node for {item.RepoFullName}.");
+                return null;
+            }
+
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var update = new ReleaseAssetUpdate(newName.Trim());
+                var updated = await node.Client.Repository.Release
+                    .EditAsset(node.Username, node.RepoName, item.AssetId, update)
+                    .ConfigureAwait(false);
+
+                item.Name = updated.Name ?? newName;
+                item.DownloadUrl = updated.BrowserDownloadUrl ?? item.DownloadUrl;
+                item.ApiUrl = updated.Url ?? item.ApiUrl;
+                _logger.Log(LogChannel.Settings, $"✏️ Renamed release asset → {item.Name}");
+                return item;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogException(LogChannel.Settings, $"Rename release asset failed (#{item.AssetId})", ex);
+                throw;
+            }
+        }
+
+        public async Task DeleteReleaseAssetAsync(
+            ReleaseFileItem item,
+            CancellationToken cancellationToken = default)
+        {
+            if (item == null) throw new ArgumentNullException(nameof(item));
+
+            var node = FindNodeByFullName(item.RepoFullName);
+            if (node?.Client == null || node.Username == null)
+            {
+                _logger.Log(LogChannel.Settings, $"⚠️ Cannot delete — no connected node for {item.RepoFullName}.");
+                return;
+            }
+
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await node.Client.Repository.Release
+                    .DeleteAsset(node.Username, node.RepoName, item.AssetId)
+                    .ConfigureAwait(false);
+                _logger.Log(LogChannel.Settings, $"🗑️ Deleted release asset: {item.Name}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogException(LogChannel.Settings, $"Delete release asset failed (#{item.AssetId})", ex);
+                throw;
+            }
+        }
+
+        private CloudNode? FindNodeByFullName(string fullName)
+        {
+            if (string.IsNullOrWhiteSpace(fullName)) return null;
+            CloudNode[] nodes;
+            lock (_activeNodesLock) nodes = _activeNodes.ToArray();
+            return nodes.FirstOrDefault(n => string.Equals(
+                $"{n.Username}/{n.RepoName}", fullName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private async Task MonitorYouTubeAndFetchAsync(
+            CloudNode node,
+            string targetFolder,
+            DateTimeOffset dispatchTime,
+            Action<string, string> onLinkFetched,
+            Action<CloudNode, long>? onRunResolved,
+            Action<int, string>? onProgress,
+            CancellationToken cancellationToken,
+            string workflowFile)
+        {
+            try { onProgress?.Invoke(0, "Initializing…"); }
+            catch { }
+
+            var run = await ResolveDispatchedRunAsync(node, targetFolder, dispatchTime, onProgress, cancellationToken, workflowFile).ConfigureAwait(false);
+            if (run == null)
+            {
+                _logger.Log(LogChannel.Downloader, "❌ Could not locate the YouTube workflow run. Check GitHub UI.");
+                onProgress?.Invoke(0, "Run not found");
+                return;
+            }
+
+            try { onRunResolved?.Invoke(node, run.Id); }
+            catch (Exception ex) { _logger.LogException(LogChannel.Downloader, "onRunResolved callback failed", ex); }
+
+            var pollInterval = Math.Max(2, _pollIntervalSecondsProvider());
+            var maxAttempts = Math.Max(1, _pollMaxAttemptsProvider());
+
+            int lastKnownPercent = 0;
+            string lastKnownLabel = "Queued";
+            int consecutiveErrors = 0;
+            const int errorLogThreshold = 3;
+
+            string? lastLoggedStatusStr = null;
+            int lastLoggedPercent = -1;
+            string lastLoggedLabel = string.Empty;
+
+            for (var attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    var current = await node.Client!.Actions.Workflows.Runs
+                        .Get(node.Username!, node.RepoName, run.Id)
+                        .ConfigureAwait(false);
+
+                    var (percent, label) = await ComputeRealProgressAsync(node, run.Id, current, cancellationToken).ConfigureAwait(false);
+                    if (percent.HasValue)
+                    {
+                        lastKnownPercent = percent.Value;
+                        lastKnownLabel = label;
+                    }
+
+                    try { onProgress?.Invoke(lastKnownPercent, lastKnownLabel); }
+                    catch (Exception cb) { _logger.LogException(LogChannel.Downloader, "onProgress callback failed", cb); }
+
+                    consecutiveErrors = 0;
+
+                    if (current.Status == WorkflowRunStatus.Completed)
+                    {
+                        if (current.Conclusion == WorkflowRunConclusion.Success)
+                        {
+                            _logger.Log(LogChannel.Downloader, "✅ YouTube download completed! Fetching links...");
+                            try { onProgress?.Invoke(100, "Completed"); } catch { }
+                            await FetchLinksFromFolderAsync(node, targetFolder, onLinkFetched, cancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            _logger.Log(LogChannel.Downloader,
+                                $"❌ YouTube workflow finished with conclusion: {current.Conclusion}.");
+                            try { onProgress?.Invoke(lastKnownPercent, $"Failed: {current.Conclusion}"); } catch { }
+                        }
+                        return;
+                    }
+
+                    var currentStatusStr = current.Status.StringValue ?? string.Empty;
+                    var statusChanged = !string.Equals(currentStatusStr, lastLoggedStatusStr, StringComparison.OrdinalIgnoreCase);
+                    var progressChanged = current.Status == WorkflowRunStatus.InProgress
+                        && (lastKnownPercent != lastLoggedPercent
+                            || !string.Equals(lastKnownLabel, lastLoggedLabel, StringComparison.Ordinal));
+
+                    if (statusChanged || progressChanged)
+                    {
+                        _logger.Log(LogChannel.Downloader,
+                            current.Status == WorkflowRunStatus.Queued
+                                ? $"⏳ [{node.RepoName}] YouTube: waiting for a runner..."
+                                : current.Status == WorkflowRunStatus.InProgress
+                                    ? $"🎬 [{node.RepoName}] YouTube ({lastKnownPercent}%): {lastKnownLabel}"
+                                    : $"🔄 [{node.RepoName}] Status: {current.Status}");
+                        lastLoggedStatusStr = currentStatusStr;
+                        lastLoggedPercent = lastKnownPercent;
+                        lastLoggedLabel = lastKnownLabel;
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    consecutiveErrors++;
+                    try { onProgress?.Invoke(lastKnownPercent, lastKnownLabel); }
+                    catch { }
+
+                    if (consecutiveErrors >= errorLogThreshold)
+                    {
+                        _logger.LogException(LogChannel.Downloader,
+                            $"Network error while polling YouTube run ({consecutiveErrors} consecutive)", ex);
+                        if (consecutiveErrors % 5 == 0) consecutiveErrors = errorLogThreshold;
+                    }
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(pollInterval), cancellationToken).ConfigureAwait(false);
+            }
+
+            _logger.Log(LogChannel.Downloader,
+                "❌ YouTube monitor timeout. The GitHub queue is taking too long; check GitHub directly.");
+        }
+
         private async Task<WorkflowRun?> ResolveDispatchedRunAsync(
             CloudNode node,
             string folderName,
             DateTimeOffset dispatchTime,
             Action<int, string>? onProgress,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            string? workflowFile = null)
         {
-            const int maxAttempts = 12;
+            var wfFile = workflowFile ?? WorkflowFileName;
+            const int maxAttempts = 60;
+            const int initialDelayMs = 3000;
+            const int regularDelayMs = 3000;
+
             for (var i = 0; i < maxAttempts; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -391,27 +2116,103 @@ namespace OctoFetch.Services
                 try { onProgress?.Invoke(0, $"Locating workflow run… ({i + 1}/{maxAttempts})"); }
                 catch { }
 
-                await Task.Delay(2500, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(i == 0 ? initialDelayMs : regularDelayMs, cancellationToken).ConfigureAwait(false);
 
-                var runs = await node.Client!.Actions.Workflows.Runs
-                    .ListByWorkflow(node.Username!, node.RepoName, WorkflowFileName,
-                        new WorkflowRunsRequest { Event = "workflow_dispatch", Branch = node.DefaultBranch })
-                    .ConfigureAwait(false);
+                try
+                {
+                    var runs = await node.Client!.Actions.Workflows.Runs
+                        .ListByWorkflow(node.Username!, node.RepoName, wfFile,
+                            new WorkflowRunsRequest { Event = "workflow_dispatch", Branch = node.DefaultBranch })
+                        .ConfigureAwait(false);
 
-                var candidate = runs.WorkflowRuns
-                    .Where(r => r.CreatedAt >= dispatchTime)
-                    .OrderByDescending(r => r.CreatedAt)
-                    .FirstOrDefault();
+                    var candidate = runs.WorkflowRuns
+                        .Where(r => r.CreatedAt >= dispatchTime)
+                        .OrderByDescending(r => r.CreatedAt)
+                        .FirstOrDefault();
 
-                if (candidate != null)
+                    if (candidate != null)
+                    {
+                        _logger.Log(LogChannel.Downloader,
+                            $"📌 Tracking workflow run #{candidate.Id} for folder '{folderName}'.");
+                        return candidate;
+                    }
+
+                    if (i >= 3)
+                    {
+                        var anyBranchRuns = await node.Client!.Actions.Workflows.Runs
+                            .ListByWorkflow(node.Username!, node.RepoName, wfFile,
+                                new WorkflowRunsRequest { Event = "workflow_dispatch" })
+                            .ConfigureAwait(false);
+
+                        var anyCandidate = anyBranchRuns.WorkflowRuns
+                            .Where(r => r.CreatedAt >= dispatchTime)
+                            .OrderByDescending(r => r.CreatedAt)
+                            .FirstOrDefault();
+
+                        if (anyCandidate != null)
+                        {
+                            _logger.Log(LogChannel.Downloader,
+                                $"📌 Tracking workflow run #{anyCandidate.Id} (branch '{anyCandidate.HeadBranch}') for folder '{folderName}'.");
+                            return anyCandidate;
+                        }
+                    }
+
+                    if (i >= 10 && runs.WorkflowRuns.Count > 0)
+                    {
+                        var fallback = runs.WorkflowRuns
+                            .Where(r => r.Status != WorkflowRunStatus.Completed)
+                            .OrderByDescending(r => r.CreatedAt)
+                            .FirstOrDefault();
+
+                        if (fallback != null)
+                        {
+                            _logger.Log(LogChannel.Downloader,
+                                $"📌 Fallback: tracking most recent active run #{fallback.Id} for folder '{folderName}'.");
+                            return fallback;
+                        }
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
                 {
                     _logger.Log(LogChannel.Downloader,
-                        $"📌 Tracking workflow run #{candidate.Id} for folder '{folderName}'.");
-                    return candidate;
+                        $"⚠️ Run lookup attempt {i + 1} failed: {ex.GetType().Name}: {ex.Message}");
                 }
             }
 
             return null;
+        }
+
+        private async Task EnsureWorkflowDispatchableAsync(
+            CloudNode node, string workflowFile, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var wf = await node.Client!.Actions.Workflows
+                    .Get(node.Username!, node.RepoName, workflowFile)
+                    .ConfigureAwait(false);
+
+                var state = wf == null ? string.Empty : (wf.State.StringValue ?? string.Empty);
+                if (!string.Equals(state, "active", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new WorkflowDispatchException(
+                        $"Workflow '{workflowFile}' on [{node.RepoName}] is not active (state: {state}). " +
+                        "Open the Actions tab in GitHub and re-enable the workflow.");
+                }
+            }
+            catch (WorkflowDispatchException) { throw; }
+            catch (Octokit.NotFoundException)
+            {
+                throw new WorkflowDispatchException(
+                    $"Workflow '{workflowFile}' was not found on [{node.RepoName}]. " +
+                    "Make sure the repo has the OctoFetch workflows committed.");
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                _logger.Log(LogChannel.Downloader,
+                    $"⚠️ Could not pre-check workflow '{workflowFile}' state: {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         private async Task MonitorAndFetchAsync(
@@ -444,6 +2245,10 @@ namespace OctoFetch.Services
             string lastKnownLabel = "Queued";
             int consecutiveErrors = 0;
             const int errorLogThreshold = 3;
+
+            string? lastLoggedStatusStr = null;
+            int lastLoggedPercent = -1;
+            string lastLoggedLabel = string.Empty;
 
             for (var attempt = 0; attempt < maxAttempts; attempt++)
             {
@@ -485,12 +2290,24 @@ namespace OctoFetch.Services
                         return;
                     }
 
-                    _logger.Log(LogChannel.Downloader,
-                        current.Status == WorkflowRunStatus.Queued
-                            ? $"⏳ [{node.RepoName}] Queued: waiting for a runner..."
-                            : current.Status == WorkflowRunStatus.InProgress
-                                ? $"⚙️ [{node.RepoName}] In Progress ({lastKnownPercent}%): {lastKnownLabel}"
-                                : $"🔄 [{node.RepoName}] Status: {current.Status}");
+                    var currentStatusStr = current.Status.StringValue ?? string.Empty;
+                    var statusChanged = !string.Equals(currentStatusStr, lastLoggedStatusStr, StringComparison.OrdinalIgnoreCase);
+                    var progressChanged = current.Status == WorkflowRunStatus.InProgress
+                        && (lastKnownPercent != lastLoggedPercent
+                            || !string.Equals(lastKnownLabel, lastLoggedLabel, StringComparison.Ordinal));
+
+                    if (statusChanged || progressChanged)
+                    {
+                        _logger.Log(LogChannel.Downloader,
+                            current.Status == WorkflowRunStatus.Queued
+                                ? $"⏳ [{node.RepoName}] Queued: waiting for a runner..."
+                                : current.Status == WorkflowRunStatus.InProgress
+                                    ? $"⚙️ [{node.RepoName}] In Progress ({lastKnownPercent}%): {lastKnownLabel}"
+                                    : $"🔄 [{node.RepoName}] Status: {current.Status}");
+                        lastLoggedStatusStr = currentStatusStr;
+                        lastLoggedPercent = lastKnownPercent;
+                        lastLoggedLabel = lastKnownLabel;
+                    }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
@@ -571,6 +2388,66 @@ namespace OctoFetch.Services
             }
         }
 
+        public async Task LocateAndCancelLastDispatchAsync(
+            CloudNode node, CancellationToken cancellationToken = default)
+        {
+            if (node.Client == null || node.Username == null) return;
+            if (!_lastDispatch.TryGetValue(node.RepoName, out var ctx)) return;
+
+            _logger.Log(LogChannel.Downloader,
+                $"🛑 Cancel requested before run #ID was known — locating the dispatched run for folder '{ctx.FolderName}'…");
+
+            const int maxAttempts = 10;
+            const int delayMs = 2000;
+
+            for (var i = 0; i < maxAttempts; i++)
+            {
+                if (cancellationToken.IsCancellationRequested) return;
+
+                try
+                {
+                    var runs = await node.Client.Actions.Workflows.Runs
+                        .ListByWorkflow(node.Username, node.RepoName, ctx.WorkflowFile,
+                            new WorkflowRunsRequest { Event = "workflow_dispatch" })
+                        .ConfigureAwait(false);
+
+                    var match = runs.WorkflowRuns
+                        .Where(r => r.CreatedAt >= ctx.DispatchTime)
+                        .OrderByDescending(r => r.CreatedAt)
+                        .FirstOrDefault();
+
+                    if (match != null)
+                    {
+                        await CancelDispatchedRunAsync(node, match.Id, cancellationToken)
+                            .ConfigureAwait(false);
+                        return;
+                    }
+                }
+                catch (OperationCanceledException) { return; }
+                catch (Exception ex)
+                {
+                    _logger.Log(LogChannel.Downloader,
+                        $"⚠️ Locate-for-cancel attempt {i + 1} failed: {ex.GetType().Name}: {ex.Message}");
+                }
+
+                try { await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
+            }
+
+            _logger.Log(LogChannel.Downloader,
+                $"⚠️ Could not locate the dispatched run for '{ctx.FolderName}' within {maxAttempts * delayMs / 1000}s; if it does appear on GitHub later, cancel it manually.");
+        }
+
+        private void RecordDispatch(CloudNode node, string folder, DateTimeOffset dispatchTime, string workflowFile)
+        {
+            _lastDispatch[node.RepoName] = new DispatchTracker
+            {
+                FolderName = folder,
+                DispatchTime = dispatchTime,
+                WorkflowFile = workflowFile,
+            };
+        }
+
         // -------- Link fetch + delete ---------------------------------------
         private static string BuildRawUrl(CloudNode node, string path)
         {
@@ -591,14 +2468,18 @@ namespace OctoFetch.Services
                     .ConfigureAwait(false);
                 if (contents == null) return;
 
+                var count = 0;
                 foreach (var item in contents.Where(c => c.Type == Octokit.ContentType.File))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (IsInternalFile(item.Name)) continue;
                     var url = BuildRawUrl(node, item.Path);
                     onLinkFetched.Invoke(item.Name, url);
-                    _logger.Log(LogChannel.Downloader, $"🔗 Fetched: {item.Name}");
+                    count++;
                 }
+
+                if (count > 0)
+                    _logger.Log(LogChannel.Downloader, $"🔗 {count} link(s) ready in the Links panel.");
             }
             catch (Exception ex)
             {
@@ -718,6 +2599,7 @@ namespace OctoFetch.Services
                                     Name = subItem.Name,
                                     Path = subItem.Path,
                                     Sha = subItem.Sha,
+                                    SizeBytes = subItem.Size,
                                     OwnerNode = node,
                                     RawUrl = BuildRawUrl(node, subItem.Path),
                                 });

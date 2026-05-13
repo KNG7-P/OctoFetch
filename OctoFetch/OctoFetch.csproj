@@ -29,14 +29,30 @@
 		<PackageReference Include="Microsoft.Toolkit.Uwp.Notifications" Version="7.1.3" />
 		<PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
 		<PackageReference Include="Octokit" Version="14.0.0" />
+		<PackageReference Include="Google.Apis.Drive.v3" Version="1.73.0.4112" />
+		<PackageReference Include="Google.Apis.Auth" Version="1.73.0" />
+		<!-- libsodium-managed wrapper. Needed only to encrypt the user's Drive
+		     OAuth refresh token before pushing it as a repo secret (GitHub's
+		     Actions secrets API uses crypto_box_seal). The native libsodium
+		     DLLs ship via runtime/ folders inside the package. -->
+		<PackageReference Include="Sodium.Core" Version="1.3.4" />
 	</ItemGroup>
 
 	<ItemGroup>
 		<EmbeddedResource Include="Resources\smart-downloader.yml" />
+		<EmbeddedResource Include="Resources\youtube_downloader.yml" />
+		<EmbeddedResource Include="Resources\drive_uploader.yml" />
+		<EmbeddedResource Include="Resources\youtube_drive_uploader.yml" />
+		<EmbeddedResource Include="Resources\release_uploader.yml" />
+		<EmbeddedResource Include="Resources\youtube_release_uploader.yml" />
+		<EmbeddedResource Include="Resources\MITM-DomainFronting.json" />
 	</ItemGroup>
 
 	<ItemGroup>
 		<None Update="GitCore\**\*">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+		<None Update="MitmCore\**\*">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</None>
 	</ItemGroup>

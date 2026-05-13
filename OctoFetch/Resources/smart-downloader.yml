@@ -1,4 +1,4 @@
-﻿# OctoFetch-YAML-Version: 2
+﻿# OctoFetch-YAML-Version: 9
 
 name: 'Cloud Leecher Engine'
  
@@ -20,7 +20,12 @@ on:
       chunk_size:
         required: false
         type: string
-        default: "90M"
+        default: "45M"
+      file_name:
+        description: 'Optional explicit on-disk filename (overrides URL parsing). The client passes the inferred name here, including for obfuscated CDN URLs whose actual filename is hex-encoded in a path segment.'
+        required: false
+        type: string
+        default: ""
  
 permissions:
   contents: write
@@ -61,6 +66,7 @@ jobs:
           FOLDER_INPUT: ${{ github.event.inputs.folder_name }}
           SAFE_MODE: ${{ github.event.inputs.safe_mode }}
           CHUNK_SIZE: ${{ github.event.inputs.chunk_size }}
+          OVERRIDE_NAME: ${{ github.event.inputs.file_name }}
         run: |
           set -euo pipefail
  
@@ -74,7 +80,69 @@ jobs:
 
           echo "FOLDER=$FOLDER" >> "$GITHUB_ENV"
  
-          RAW_NAME=$(basename "${URL%%\?*}" | sed 's/%20/ /g')
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+          # Filename resolution priority:
+          #   1. OVERRIDE_NAME from the client (UrlFileNameInferrer's hex /
+          #      filename-shape pass already succeeded — use verbatim).
+          #   2. Content-Disposition header probed via HTTP HEAD from the
+          #      runner, which has full open-internet access. Covers
+          #      encrypted-token URLs (firezone Fernet tokens, Mega.nz,
+          #      Pixeldrain, etc.) whose real filename only lives in the
+          #      server response, not in the URL string itself.
+          #   3. Legacy URL basename parse — last resort.
+          probe_content_disposition() {
+            python3 - "$1" "$UA" 2>/dev/null <<'PYEOF'
+          import sys, re, urllib.request, urllib.parse, ssl
+          url, ua = sys.argv[1], sys.argv[2]
+          ctx = ssl.create_default_context()
+          cd = ""
+          for method in ("HEAD", "GET"):
+              try:
+                  headers = {"User-Agent": ua}
+                  if method == "GET":
+                      headers["Range"] = "bytes=0-0"
+                  req = urllib.request.Request(url, method=method, headers=headers)
+                  with urllib.request.urlopen(req, timeout=25, context=ctx) as r:
+                      cd = r.headers.get("Content-Disposition", "") or ""
+                  if cd:
+                      break
+              except Exception:
+                  continue
+          name = ""
+          if cd:
+              m = re.search(r"filename\*\s*=\s*([\w-]+)''([^;\r\n]+)", cd, re.IGNORECASE)
+              if m:
+                  enc = (m.group(1) or "utf-8").strip()
+                  try:
+                      name = urllib.parse.unquote(m.group(2).strip(), encoding=enc, errors="replace")
+                  except Exception:
+                      name = ""
+              if not name:
+                  m = re.search(r'filename\s*=\s*"([^"]+)"', cd, re.IGNORECASE)
+                  if m:
+                      name = m.group(1)
+              if not name:
+                  m = re.search(r'filename\s*=\s*([^;\r\n]+)', cd, re.IGNORECASE)
+                  if m:
+                      name = m.group(1).strip().strip('"').strip("'")
+          name = (name or "").strip().replace("/", "_").replace("\\", "_")
+          if name:
+              print(name)
+          PYEOF
+          }
+
+          if [ -n "$OVERRIDE_NAME" ]; then
+            RAW_NAME="$OVERRIDE_NAME"
+          else
+            CD_NAME=$(probe_content_disposition "$URL" || true)
+            if [ -n "$CD_NAME" ]; then
+              echo "🔍 Filename from Content-Disposition: $CD_NAME"
+              RAW_NAME="$CD_NAME"
+            else
+              RAW_NAME=$(basename "${URL%%\?*}" | sed 's/%20/ /g')
+            fi
+          fi
 
           RAW_NAME=$(printf '%s' "$RAW_NAME" | tr -d '\000-\037')
  
@@ -103,8 +171,6 @@ jobs:
             fi
             FINAL_FILE="$NAME_NO_EXT.$EXT"
           fi
- 
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
  
           aria2c \
             --console-log-level=warn \
